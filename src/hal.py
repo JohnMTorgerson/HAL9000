@@ -1,6 +1,7 @@
 import wave
 import platform
 import os
+import sys
 import numpy as np
 import sounddevice as sd
 from dotenv import load_dotenv
@@ -11,10 +12,31 @@ from llm_client import LLMClient  # ensure llm_client.py is accessible
 from whisper_stt import WhisperSTT  # import your external WhisperSTT
 from weather_api import fetch_current_weather, fetch_weather_forecast
 from wolfram_api import fetch_wolfram_answer  # import your external Wolfram API function
-
+from news_api import fetch_top_headlines, fetch_articles_by_keyword
 
 # Load environment variables from .env file
 load_dotenv()
+
+# ========== SET UP LOGGING ========== #
+import logging
+logger = logging.getLogger('HAL')
+logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter("%(asctime)s %(name)s.%(funcName)s() line %(lineno)s %(levelname).5s :: %(message)s")
+# log to file at INFO level
+file_handler = logging.FileHandler(os.path.abspath(f"{os.environ['LOG_PATH']}/log.log"))
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+# log to another file at ERROR level
+error_file_handler = logging.FileHandler(os.path.abspath(f"{os.environ['LOG_PATH']}/error.log"))
+error_file_handler.setLevel(logging.ERROR)
+error_file_handler.setFormatter(formatter)
+logger.addHandler(error_file_handler)
+# log to console at DEBUG level
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setLevel(logging.DEBUG)
+stream_handler.setFormatter(formatter)
+logger.addHandler(stream_handler)
 
 # Load HAL's voice
 voice = PiperVoice.load("piper-models/hal.onnx")
@@ -37,7 +59,7 @@ def play_audio(file_path):
     elif system == "Linux":
         os.system(f"aplay {file_path}")
     else:
-        print(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
+        logger.error(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
 
 def add_reverb(input_wav, output_wav, delay_ms=120, decay=0.4, tail_volume_db=30):
     audio = AudioSegment.from_wav(input_wav)
@@ -51,12 +73,12 @@ def add_reverb(input_wav, output_wav, delay_ms=120, decay=0.4, tail_volume_db=30
 def record_audio_interactive(fs=16000):
     import numpy as np
 
-    print("Recording... Press Enter to stop.")
+    logger.debug("Recording... Press Enter to stop.")
     recording = []
 
     def callback(indata, frames, time, status):
         if status:
-            print(status)
+            logger.debug(status)
         recording.append(indata.copy())
 
     stream = sd.InputStream(samplerate=fs, channels=1, callback=callback)
@@ -66,7 +88,7 @@ def record_audio_interactive(fs=16000):
     stream.close()
 
     audio = np.concatenate(recording).flatten()
-    print("Recording complete.")
+    logger.debug("Recording complete.")
     return audio, fs
 
 def get_user_input(stt):
@@ -78,7 +100,7 @@ def get_user_input(stt):
         # Start recording immediately
         audio, fs = record_audio_interactive()
         text = stt.transcribe(audio, fs)
-        print(f"You said: {text}")
+        logger.info(f"USER: {text}")
         return text
     else:
         return user_line
@@ -86,11 +108,11 @@ def get_user_input(stt):
 
 # # Example usage:
 # city = "Minneapolis"
-# print(fetch_current_weather(city))
-# print(fetch_weather_forecast(city, days=3))
+# logger.info(fetch_current_weather(city))
+# logger.info(fetch_weather_forecast(city, days=3))
 
 
-print("HAL 9000 is now online. Type 'exit' to shut me down.\n")
+logger.info("========================= HAL 9000 is now online. Type 'exit' to shut me down.\n")
 
 openai_api_key = os.getenv("OPENAI_API_KEY")
 
@@ -112,13 +134,18 @@ sst = WhisperSTT(model_name="base")
 while True:
     user_input = get_user_input(sst)
     if user_input is None:
-        print("HAL: Goodbye, Torgo.")
+        logger.debug("HAL: Goodbye, Torgo.")
         break
 
     hal_reply = llm.get_response(user_input)
 
     if hal_reply.startswith("[EXTERNAL_API_CALL]"):
-        print(f"HAL (external request): {hal_reply}")
+        logger.debug("HAL: Just a moment...")
+        play_audio("../just_a_moment.aiff")  # Play "just a moment" clip to alert user that an API call is being made
+
+
+        logger.info(f"HAL (external request): {hal_reply}")
+
         # Parse the API call command
         command = hal_reply[len("[EXTERNAL_API_CALL]"):].strip().split()
         api_type = command[0].lower()
@@ -141,19 +168,26 @@ while True:
             query = " ".join(params)
             api_response = fetch_wolfram_answer(query)
 
+        elif api_type == "news":
+            if params:
+                keyword = " ".join(params)
+                api_response = fetch_articles_by_keyword(keyword)
+            else:
+                api_response = fetch_top_headlines()
+
         else:
             api_response = f"Unknown API request type: {api_type}"
 
-        # print(f"External data for HAL: {api_response}")
+        # logger.info(f"External data for HAL: {api_response}")
 
         # Send external data back to LLM for enriched response
         enriched_prompt = f"[EXTERNAL_API_RESPONSE] {api_response}"
 
-        print(f"Enriched prompt for HAL: {enriched_prompt}")
+        logger.info(f"Enriched prompt for HAL: {enriched_prompt}")
 
         hal_reply = llm.get_response(enriched_prompt)
 
-    print(f"HAL: {hal_reply}")
+    logger.info(f"HAL: {hal_reply}")
 
     with wave.open("hal_output.wav", "wb") as wav_file:
         voice.synthesize_wav(hal_reply, wav_file, syn_config=syn_config)

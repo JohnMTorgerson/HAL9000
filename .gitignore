@@ -2,3 +2,4 @@
 .DS_Store
 *.wav
 src/__pycache__
+logs/
