@@ -95,6 +95,22 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # ------------------------------------------------------------
 stt = WhisperSTT(model_name="base")
 
+# ------------------------------------------------------------
+# LLM Configuration
+# ------------------------------------------------------------
+openai_api_key = os.getenv("OPENAI_API_KEY")
+llm = LLMClient(
+    backend="openai",
+    model_name="gpt-4.1-nano",
+    max_history=10,
+    openai_api_key=openai_api_key
+)
+# llm = LLMClient(
+#     backend="ollama",
+#     model_name="llama3",  # or whichever Ollama model you want to use
+#     max_history=10
+# )
+
 
 # ------------------------------------------------------------
 # Main Loop
@@ -144,7 +160,7 @@ def run():
             # parse response and deal with any API calls
             if hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.debug("HAL: Just a moment...")
-                play_audio("HAL-clips/just_a_moment.aiff")
+                play_audio("HAL-clips/just_a_moment_normalized.aiff")
 
                 logger.info(f"HAL (external request): {hal_reply}")
                 command = hal_reply[len("[EXTERNAL_API_CALL]"):].strip().split()
@@ -180,11 +196,16 @@ def run():
 
             logger.info(f"HAL: {hal_reply}")
 
-            # create audio from response text
+            # create audio from response text and save to file
             with wave.open("hal_output.wav", "wb") as wav_file:
                 voice.synthesize_wav(hal_reply, wav_file, syn_config=syn_config)
 
-            # play audio of HAL's response
+            # normalize audio file
+            audio, fs = sf.read("hal_output.wav", dtype="float32")
+            normalized_audio = normalize_audio(audio)
+            sf.write("hal_output.wav", normalized_audio, fs)
+
+            # play audio of HAL's response from normalized file
             play_audio("hal_output.wav")
 
         except KeyboardInterrupt:
@@ -366,15 +387,6 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
         raise
 
     return trigger_type["value"], stream, buffered_audio_container["audio"]
-
-# ------------------ LLM Setup ------------------ #
-openai_api_key = os.getenv("OPENAI_API_KEY")
-llm = LLMClient(
-    backend="openai",
-    model_name="gpt-4.1-nano",
-    max_history=10,
-    openai_api_key=openai_api_key
-)
 
 # ------------------------------------------------------------
 # Entry Point
