@@ -1,0 +1,12 @@
+numpy
+openai
+openai-whisper
+simpleaudio
+sounddevice
+soundfile
+python-dotenv
+pydub
+pynput
+pvporcupine
+piper-tts
+requests

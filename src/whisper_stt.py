@@ -1,7 +1,5 @@
 import whisper
-import sounddevice as sd
 import numpy as np
-import simpleaudio as sa
 from speech_to_text import SpeechToText
 
 class WhisperSTT(SpeechToText):
