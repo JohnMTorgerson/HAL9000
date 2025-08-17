@@ -64,7 +64,7 @@ logger.addHandler(stream_handler)
 # ------------------------------------------------------------
 # Recording Configuration
 # ------------------------------------------------------------
-RATE = 16000
+RATE = 16000 # must be 16000 for porcupine
 CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
@@ -294,14 +294,16 @@ def get_default_device(kind="input"):
 # ------------------------------------------------------------
 # Record until silence (used with wake word detection)
 # ------------------------------------------------------------
-def record_until_silence(stream, initial_audio=None, silence_threshold=0.001, silence_duration=0.8, fs=RATE, max_duration=12.0):
+def record_until_silence(stream, initial_audio=None, silence_threshold=0.001,
+                         silence_duration=0.8, fs=RATE, max_duration=12.0):
     """
     Records audio from the mic until a period of silence is detected
     or until max_duration (seconds) is reached.
     - initial_audio: numpy array of prebuffered audio (optional, from wakeword detection)
     - silence_threshold: RMS below which is considered silence
     - silence_duration: seconds of consecutive silence to stop recording
-    - max_duration: maximum recording time in seconds
+    - fs: target sample rate (default 16000)
+    - max_duration: hard stop after so many seconds even if silence not detected
     """
     recording = []
 
@@ -314,11 +316,26 @@ def record_until_silence(stream, initial_audio=None, silence_threshold=0.001, si
     max_chunks = int(max_duration * fs / CHUNK_SIZE)
     chunks_recorded = 0
 
+    # Use stream's samplerate
+    device_fs = int(stream.samplerate)
+
     logger.info("Recording command (silence detection)...")
     start_time = time.time()
     while chunks_recorded < max_chunks:
         chunk, _ = stream.read(CHUNK_SIZE)
-        chunk = chunk.flatten().astype(np.float32) / 32768.0  # convert int16 -> float32 -1.0..1.0
+        chunk = chunk.flatten()
+
+        # Convert to float32 -1.0..1.0
+        chunk = chunk.astype(np.float32) / 32768.0
+
+        # Resample to target fs if device_fs != fs
+        if device_fs != fs:
+            chunk = np.interp(
+                np.linspace(0, len(chunk), int(len(chunk) * fs / device_fs)),
+                np.arange(len(chunk)),
+                chunk
+            ).astype(np.float32)
+
         recording.append(chunk)
         chunks_recorded += 1
 
@@ -337,7 +354,9 @@ def record_until_silence(stream, initial_audio=None, silence_threshold=0.001, si
     duration = time.time() - start_time
     audio = np.concatenate(recording)
     logger.info(f"Recording complete. Total duration: {len(audio)/fs:.2f} sec (loop time {duration:.2f} sec)")
+
     return audio, fs
+
 
 # ------------------------------------------------------------
 # Record while spacebar is held 
@@ -349,6 +368,7 @@ def record_while_spacebar_held(stream, fs=RATE):
     """
     recording = []
     stop_event = threading.Event()
+    device_fs = int(stream.samplerate)
 
     def on_release(key):
         if key == keyboard.Key.space:
@@ -363,6 +383,15 @@ def record_while_spacebar_held(stream, fs=RATE):
     while not stop_event.is_set():
         chunk, _ = stream.read(CHUNK_SIZE)
         chunk = chunk.flatten().astype(np.float32) / 32768.0
+
+        # Resample to 16kHz if needed
+        if device_fs != fs:
+            chunk = np.interp(
+                np.linspace(0, len(chunk), int(len(chunk) * fs / device_fs)),
+                np.arange(len(chunk)),
+                chunk
+            ).astype(np.float32)
+
         recording.append(chunk)
 
     listener.join()
@@ -370,12 +399,13 @@ def record_while_spacebar_held(stream, fs=RATE):
     duration = time.time() - start_time
     audio = np.concatenate(recording) if recording else np.array([], dtype=np.float32)
     logger.info(f"Recording complete (spacebar released). Total duration: {len(audio)/fs:.2f} sec (loop time {duration:.2f} sec)")
+
     return audio, fs
 
 # ------------------------------------------------------------
 # Wait for trigger – either wake word or spacebar hold
 # ------------------------------------------------------------
-def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION):
+def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
     """
     Waits for either the wake word or the Spacebar key to trigger recording.
     Returns (trigger_type, stream, buffered_audio)
@@ -386,8 +416,9 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION):
     trigger_event = threading.Event()
     trigger_type = {"value": None}
     buffered_audio_container = {"audio": None}
-    input_device, fs = get_default_device("input")
+    input_device, device_fs = get_default_device("input")
 
+    # Start spacebar listener in a separate thread
     def spacebar_listener():
         def on_press(key):
             try:
@@ -407,25 +438,36 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION):
 
     threading.Thread(target=spacebar_listener, daemon=True).start()
 
-    frame_length = porcupine.frame_length
-    buffer_size = int(pre_buffer_duration * fs)
-    pre_buffer = deque(maxlen=buffer_size)
+    # Set up prebuffer for wake word
+    pre_buffer = deque(maxlen=int(pre_buffer_duration * device_fs))
 
     logger.info("Listening for wake word or push-to-talk (hold Spacebar)...")
-    stream = sd.InputStream(samplerate=fs, channels=1, dtype="int16", device=input_device)
+    stream = sd.InputStream(samplerate=device_fs, channels=1, dtype="int16", device=input_device)
     stream.start()
+
     try:
         while not trigger_event.is_set():
-            audio_frame, _ = stream.read(frame_length)
+            audio_frame, _ = stream.read(porcupine.frame_length)
             audio_frame = audio_frame.flatten()
             pre_buffer.extend(audio_frame)
 
-            keyword_index = porcupine.process(audio_frame)
+            # Porcupine expects 16kHz, so resample if needed
+            if device_fs != fs:
+                audio_16k = np.interp(
+                    np.linspace(0, len(audio_frame), int(len(audio_frame) * fs / device_fs)),
+                    np.arange(len(audio_frame)),
+                    audio_frame
+                ).astype(np.int16)
+            else:
+                audio_16k = audio_frame
+
+            keyword_index = porcupine.process(audio_16k)
             if keyword_index >= 0:
                 trigger_type["value"] = "wakeword"
                 buffered_audio_container["audio"] = np.array(pre_buffer, dtype=np.float32) / 32768.0
                 trigger_event.set()
                 break
+
     except KeyboardInterrupt:
         stream.stop()
         stream.close()
