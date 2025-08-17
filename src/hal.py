@@ -22,6 +22,9 @@ from pynput import keyboard
 import threading
 import queue
 import platform
+from led_manager import get_led
+
+
 SYSTEM = platform.system()
 # ------------------ macOS Quartz fix for pynput ------------------ #
 if SYSTEM == "Darwin":
@@ -117,6 +120,10 @@ else:
     llm = None
     raise ValueError(f"Unknown LLM Backend: {LLM_BACKEND}")
 
+# ------------------------------------------------------------
+# Get LED if on raspberry pi, dummy if not
+# ------------------------------------------------------------
+led = get_led()
 
 # ------------------------------------------------------------
 # Main Loop
@@ -129,6 +136,10 @@ def run():
             # wait for trigger – either wake word or spacebar press
             trigger, stream, prebuffered_audio = wait_for_trigger()
             logger.info("====================================================================")
+
+            # if on raspberry pi, light LED
+            logger.info("Detected command: lighting LED")
+            led.on()
 
             # if spacebar, record until spacebar is released
             if trigger == "spacebar":
@@ -214,10 +225,19 @@ def run():
             # play audio of HAL's response from normalized file
             play_audio("hal_output.wav")
 
+            #turn LED off
+            logger.info("Turning LED off")
+            led.off()
+
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
+            led.off()
             porcupine.delete()
             sys.exit(0)
+
+        except Exception:
+            led.off()
+            raise
 
 
 # ------------------------------------------------------------
