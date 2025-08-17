@@ -437,8 +437,8 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
 
     threading.Thread(target=spacebar_listener, daemon=True).start()
 
-    # Set up prebuffer for wake word
-    pre_buffer = deque(maxlen=int(pre_buffer_duration * device_fs))
+    # Set up prebuffer for wake word, using 16k for the frame rate (since we'll convert to that before extending the buffer)
+    pre_buffer = deque(maxlen=int(pre_buffer_duration * fs))
 
     logger.info("Listening for wake word or push-to-talk (hold Spacebar)...")
     stream = sd.InputStream(samplerate=device_fs, channels=1, dtype="int16", device=input_device)
@@ -446,19 +446,26 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
 
     try:
         while not trigger_event.is_set():
-            audio_frame, _ = stream.read(porcupine.frame_length)
-            audio_frame = audio_frame.flatten()
-            pre_buffer.extend(audio_frame)
+            # porcupine expects 512 samples, so...
+            # How many samples at device_fs give 512 samples at 16kHz
+            device_frame_length = int(porcupine.frame_length * device_fs / fs)
 
-            # Porcupine expects 16kHz, so resample if needed
+            # Read that many samples from the device
+            audio_frame, _ = stream.read(device_frame_length)
+            audio_frame = audio_frame.flatten()
+
+            # Now resample to exactly porcupine.frame_length
             if device_fs != fs:
                 audio_16k = np.interp(
-                    np.linspace(0, len(audio_frame), int(len(audio_frame) * fs / device_fs)),
+                    np.linspace(0, len(audio_frame), porcupine.frame_length),
                     np.arange(len(audio_frame)),
                     audio_frame
                 ).astype(np.int16)
             else:
                 audio_16k = audio_frame
+
+            # extend prebuffer with converted audio frame
+            pre_buffer.extend(audio_16k)
 
             keyword_index = porcupine.process(audio_16k)
             if keyword_index >= 0:
