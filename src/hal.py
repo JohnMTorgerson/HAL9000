@@ -219,26 +219,30 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(file_path):
-    if SYSTEM == "Darwin":
-        os.system(f"afplay '{file_path}'")
-    elif SYSTEM == "Windows":
-        os.system(f"start \"\" \"{file_path}\"")
-    elif SYSTEM == "Linux":
-        output_device, device_fs = get_default_device("output")
-        data, sr = sf.read(file_path, dtype="float32")
-        if sr != device_fs:
-            # Resample to device_fs
-            data = np.interp(
-                np.linspace(0, len(data), int(len(data) * device_fs / sr)),
-                np.arange(len(data)),
-                data
-            ).astype(np.float32)
-            sr = device_fs
-        sd.play(data, samplerate=sr, device=output_device)
-        sd.wait()
-    else:
-        logger.error(f"Cannot play audio automatically on {SYSTEM}. Please open {file_path} manually.")
+def play_audio(filename):
+    data, sr = sf.read(filename, dtype="float32")
+
+    # Ensure data is at least 2D (samples, channels)
+    if data.ndim == 1:
+        data = data[:, np.newaxis]
+
+    output_device, device_sr = get_default_device("output")
+
+    # Resample if needed
+    if sr != device_sr:
+        num_samples = int(data.shape[0] * device_sr / sr)
+        resampled = np.zeros((num_samples, data.shape[1]), dtype=np.float32)
+        for ch in range(data.shape[1]):
+            resampled[:, ch] = np.interp(
+                np.linspace(0, len(data[:, ch]), num_samples),
+                np.arange(len(data[:, ch])),
+                data[:, ch]
+            )
+        data = resampled
+
+    sd.play(data, samplerate=device_sr, device=output_device)
+    sd.wait()
+
 
 
 def normalize_audio(audio, peak=0.95):
