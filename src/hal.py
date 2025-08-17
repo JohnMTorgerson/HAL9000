@@ -94,24 +94,28 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # ------------------------------------------------------------
 # Load Whisper – speech to text model
 # ------------------------------------------------------------
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME")
-stt = WhisperSTT(model_name=WHISPER_MODEL_NAME)
+stt = WhisperSTT()
 
 # ------------------------------------------------------------
 # LLM Configuration
 # ------------------------------------------------------------
-openai_api_key = os.getenv("OPENAI_API_KEY")
-llm = LLMClient(
-    backend="openai",
-    model_name="gpt-4.1-nano",
-    max_history=10,
-    openai_api_key=openai_api_key
-)
-# llm = LLMClient(
-#     backend="ollama",
-#     model_name="llama3",  # or whichever Ollama model you want to use
-#     max_history=10
-# )
+LLM_BACKEND = os.getenv("LLM_BACKEND", "openai")
+if LLM_BACKEND == "openai":
+    llm = LLMClient(
+        backend="openai",
+        model_name=os.getenv("LLM_MODEL"),
+        max_history=int(os.getenv("LLM_MAX_HISTORY")),
+        openai_api_key=os.getenv("OPENAI_API_KEY")
+    )
+elif LLM_BACKEND == "ollama":
+    llm = LLMClient(
+        backend="ollama",
+        model_name=os.getenv("LLM_MODEL"),
+        max_history=int(os.getenv("LLM_MAX_HISTORY"))
+    )
+else:
+    llm = None
+    raise ValueError(f"Unknown LLM Backend: {LLM_BACKEND}")
 
 
 # ------------------------------------------------------------
