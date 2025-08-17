@@ -225,8 +225,16 @@ def play_audio(file_path):
     elif SYSTEM == "Windows":
         os.system(f"start \"\" \"{file_path}\"")
     elif SYSTEM == "Linux":
-        output_device, fs = get_default_device("output")
+        output_device, device_fs = get_default_device("output")
         data, sr = sf.read(file_path, dtype="float32")
+        if sr != device_fs:
+            # Resample to device_fs
+            data = np.interp(
+                np.linspace(0, len(data), int(len(data) * device_fs / sr)),
+                np.arange(len(data)),
+                data
+            ).astype(np.float32)
+            sr = device_fs
         sd.play(data, samplerate=sr, device=output_device)
         sd.wait()
     else:
@@ -296,38 +304,43 @@ def get_default_device(kind="input"):
 def record_until_silence(stream, initial_audio=None, silence_threshold=0.001,
                          silence_duration=0.8, fs=RATE, max_duration=12.0):
     """
-    Records audio from the mic until a period of silence is detected
-    or until max_duration (seconds) is reached.
-    - initial_audio: numpy array of prebuffered audio (optional, from wakeword detection)
+    Records audio until a period of silence is detected or max_duration is reached.
+    Handles arbitrary device sample rates correctly.
+    - initial_audio: numpy array of prebuffered audio (optional)
     - silence_threshold: RMS below which is considered silence
     - silence_duration: seconds of consecutive silence to stop recording
     - fs: target sample rate (default 16000)
-    - max_duration: hard stop after so many seconds even if silence not detected
+    - max_duration: hard stop in seconds
     """
     recording = []
 
+    # Include prebuffer if provided
     if initial_audio is not None:
         logger.debug(f"Initial prebuffer length: {len(initial_audio)} samples (~{len(initial_audio)/fs:.2f} sec)")
         recording.append(initial_audio.astype("float32"))
 
-    silence_counter = 0
-    max_silence_chunks = int(silence_duration * fs / CHUNK_SIZE)
-    max_chunks = int(max_duration * fs / CHUNK_SIZE)
-    chunks_recorded = 0
-
-    # Use stream's samplerate
+    # Determine device sample rate from stream
     device_fs = int(stream.samplerate)
+    chunk_size = CHUNK_SIZE
+
+    # Compute how many consecutive chunks equal desired silence duration
+    chunk_duration_sec = chunk_size / fs
+    max_silence_chunks = int(silence_duration / chunk_duration_sec)
+
+    # Maximum chunks to prevent infinite recording
+    max_chunks = int(max_duration / chunk_duration_sec)
+    chunks_recorded = 0
+    silence_counter = 0
 
     logger.info("Recording command (silence detection)...")
     start_time = time.time()
+
     while chunks_recorded < max_chunks:
-        chunk, _ = stream.read(CHUNK_SIZE)
-        chunk = chunk.flatten()
+        # Read a chunk from stream
+        chunk, _ = stream.read(chunk_size)
+        chunk = chunk.flatten().astype(np.float32) / 32768.0
 
-        # Convert to float32 -1.0..1.0
-        chunk = chunk.astype(np.float32) / 32768.0
-
-        # Resample to target fs if device_fs != fs
+        # Resample if device_fs != fs
         if device_fs != fs:
             chunk = np.interp(
                 np.linspace(0, len(chunk), int(len(chunk) * fs / device_fs)),
@@ -346,7 +359,7 @@ def record_until_silence(stream, initial_audio=None, silence_threshold=0.001,
 
         logger.debug(f"Chunk {chunks_recorded}: RMS={rms:.6f}, silence_counter={silence_counter}")
 
-        if silence_counter > max_silence_chunks:
+        if silence_counter >= max_silence_chunks:
             logger.debug(f"Silence threshold reached after {chunks_recorded} chunks.")
             break
 
