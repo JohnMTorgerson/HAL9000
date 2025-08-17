@@ -257,7 +257,6 @@ def add_reverb(input_wav, output_wav, delay_ms=120, decay=0.4, tail_volume_db=30
 def get_default_device(kind="input"):
     """
     Returns a tuple (device, samplerate) suitable for sounddevice streams.
-    Always uses fs=16000 for input (mic) so rest of code works.
     kind: "input" or "output"
     """
     devices = sd.query_devices()
@@ -267,14 +266,14 @@ def get_default_device(kind="input"):
             # pick USB mic if available
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0 and ("Microphone" in dev['name'] or "USB" in dev['name']):
-                    return i, 16000
+                    return i, int(dev['default_samplerate'])
             # fallback: first input device
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
-                    return i, 16000
+                    return i, int(dev['default_samplerate'])
         else:
             # macOS/Windows: use default device
-            return None, 16000
+            return None, RATE
     else:  # output
         if SYSTEM == "Linux":
             # pick USB speaker if available
