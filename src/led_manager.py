@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class BaseLED:
     def on(self): pass
@@ -29,7 +32,7 @@ class DummyLED(BaseLED):
 
 def get_led():
     """Return a GPIOLED on Raspberry Pi, DummyLED elsewhere."""
-    if os.uname().machine.startswith("arm") and os.path.exists("/sys/class/gpio"):
+    if os.getenv("PLATFORM") == "pi":
         try:
             return GPIOLED(pin=int(os.getenv("LED_PIN", 18)))
         except Exception as e:
