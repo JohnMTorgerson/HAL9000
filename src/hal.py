@@ -21,9 +21,10 @@ from collections import deque
 from pynput import keyboard
 import threading
 import queue
-# ------------------ macOS Quartz fix for pynput ------------------ #
 import platform
-if platform.system() == "Darwin":
+SYSTEM = platform.system()
+# ------------------ macOS Quartz fix for pynput ------------------ #
+if SYSTEM == "Darwin":
     try:
         import Quartz
         # Force the constant to load
@@ -218,16 +219,18 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(file_path):
-    system = platform.system()
-    if system == "Darwin":
-        os.system(f"afplay {file_path}")
-    elif system == "Windows":
-        os.system(f"start {file_path}")
-    elif system == "Linux":
-        os.system(f"aplay {file_path}")
+def play_audio(file_path):    
+    if SYSTEM == "Darwin":
+        os.system(f"afplay '{file_path}'")
+    elif SYSTEM == "Windows":
+        os.system(f"start \"\" \"{file_path}\"")
+    elif SYSTEM == "Linux":
+        output_device, fs = get_default_device("output")
+        data, sr = sf.read(file_path, dtype="float32")
+        sd.play(data, samplerate=sr, device=output_device)
+        sd.wait()
     else:
-        logger.error(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
+        logger.error(f"Cannot play audio automatically on {SYSTEM}. Please open {file_path} manually.")
 
 def normalize_audio(audio, peak=0.95):
     """
@@ -246,6 +249,43 @@ def add_reverb(input_wav, output_wav, delay_ms=120, decay=0.4, tail_volume_db=30
     combined = audio.overlay(delayed, gain_during_overlay=-decay*10)
     combined = normalize(combined)
     combined.export(output_wav, format="wav")
+
+# ----------------------------------------------------------------
+# Helper function to get the correct audio device for input/output
+# ----------------------------------------------------------------
+def get_default_device(kind="input"):
+    """
+    Returns a tuple (device, samplerate) suitable for sounddevice streams.
+    kind: "input" or "output"
+    """
+    
+    if SYSTEM == "Linux":
+        devices = sd.query_devices()
+        if kind == "input":
+            # Try to find the USB mic first
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0 and ("Microphone" in dev['name'] or "USB" in dev['name']):
+                    return i, int(dev['default_samplerate'])
+            # fallback: first input device
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    return i, int(dev['default_samplerate'])
+        else:  # output
+            # Try to find the USB speaker
+            for i, dev in enumerate(devices):
+                if dev['max_output_channels'] > 0 and ("USB" in dev['name'] or "Device" in dev['name']):
+                    return i, int(dev['default_samplerate'])
+            # fallback: first output device
+            for i, dev in enumerate(devices):
+                if dev['max_output_channels'] > 0:
+                    return i, int(dev['default_samplerate'])
+    else:
+        # macOS or other: just use default
+        if kind == "input":
+            return None, 16000  # default input device, sample rate 16kHz
+        else:
+            return None, 44100  # default output device, standard 44.1kHz
+
 
 # ------------------------------------------------------------
 # Record until silence (used with wake word detection)
@@ -342,6 +382,7 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
     trigger_event = threading.Event()
     trigger_type = {"value": None}
     buffered_audio_container = {"audio": None}
+    input_device, temp = get_default_device("input")
 
     def spacebar_listener():
         def on_press(key):
@@ -367,7 +408,7 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
     pre_buffer = deque(maxlen=buffer_size)
 
     logger.info("Listening for wake word or push-to-talk (hold Spacebar)...")
-    stream = sd.InputStream(samplerate=fs, channels=1, dtype="int16")
+    stream = sd.InputStream(samplerate=fs, channels=1, dtype="int16", device=input_device)
     stream.start()
     try:
         while not trigger_event.is_set():
