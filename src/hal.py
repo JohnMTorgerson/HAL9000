@@ -219,7 +219,7 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(file_path):    
+def play_audio(file_path):
     if SYSTEM == "Darwin":
         os.system(f"afplay '{file_path}'")
     elif SYSTEM == "Windows":
@@ -231,6 +231,7 @@ def play_audio(file_path):
         sd.wait()
     else:
         logger.error(f"Cannot play audio automatically on {SYSTEM}. Please open {file_path} manually.")
+
 
 def normalize_audio(audio, peak=0.95):
     """
@@ -256,22 +257,27 @@ def add_reverb(input_wav, output_wav, delay_ms=120, decay=0.4, tail_volume_db=30
 def get_default_device(kind="input"):
     """
     Returns a tuple (device, samplerate) suitable for sounddevice streams.
+    Always uses fs=16000 for input (mic) so rest of code works.
     kind: "input" or "output"
     """
-    
-    if SYSTEM == "Linux":
-        devices = sd.query_devices()
-        if kind == "input":
-            # Try to find the USB mic first
+    devices = sd.query_devices()
+
+    if kind == "input":
+        if SYSTEM == "Linux":
+            # pick USB mic if available
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0 and ("Microphone" in dev['name'] or "USB" in dev['name']):
-                    return i, int(dev['default_samplerate'])
+                    return i, 16000
             # fallback: first input device
             for i, dev in enumerate(devices):
                 if dev['max_input_channels'] > 0:
-                    return i, int(dev['default_samplerate'])
-        else:  # output
-            # Try to find the USB speaker
+                    return i, 16000
+        else:
+            # macOS/Windows: use default device
+            return None, 16000
+    else:  # output
+        if SYSTEM == "Linux":
+            # pick USB speaker if available
             for i, dev in enumerate(devices):
                 if dev['max_output_channels'] > 0 and ("USB" in dev['name'] or "Device" in dev['name']):
                     return i, int(dev['default_samplerate'])
@@ -279,12 +285,10 @@ def get_default_device(kind="input"):
             for i, dev in enumerate(devices):
                 if dev['max_output_channels'] > 0:
                     return i, int(dev['default_samplerate'])
-    else:
-        # macOS or other: just use default
-        if kind == "input":
-            return None, 16000  # default input device, sample rate 16kHz
         else:
-            return None, 44100  # default output device, standard 44.1kHz
+            # macOS/Windows: default output
+            return None, 44100
+
 
 
 # ------------------------------------------------------------
@@ -371,7 +375,7 @@ def record_while_spacebar_held(stream, fs=RATE):
 # ------------------------------------------------------------
 # Wait for trigger – either wake word or spacebar hold
 # ------------------------------------------------------------
-def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
+def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION):
     """
     Waits for either the wake word or the Spacebar key to trigger recording.
     Returns (trigger_type, stream, buffered_audio)
@@ -382,7 +386,7 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
     trigger_event = threading.Event()
     trigger_type = {"value": None}
     buffered_audio_container = {"audio": None}
-    input_device, temp = get_default_device("input")
+    input_device, fs = get_default_device("input")
 
     def spacebar_listener():
         def on_press(key):
