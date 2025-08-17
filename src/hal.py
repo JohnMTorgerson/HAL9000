@@ -94,7 +94,8 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # ------------------------------------------------------------
 # Load Whisper – speech to text model
 # ------------------------------------------------------------
-stt = WhisperSTT(model_name="base")
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME")
+stt = WhisperSTT(model_name=WHISPER_MODEL_NAME)
 
 # ------------------------------------------------------------
 # LLM Configuration
@@ -146,10 +147,10 @@ def run():
             # normalize recorded audio
             audio = normalize_audio(audio)
 
-            # save and play back command audio for debugging purposes
-            sf.write("last_command.wav", audio, fs)
-            logger.debug("Saved last command to last_command.wav – playing...")
-            play_audio("last_command.wav")
+            # # save and play back command audio for debugging purposes
+            # sf.write("last_command.wav", audio, fs)
+            # logger.debug("Saved last command to last_command.wav – playing...")
+            # play_audio("last_command.wav")
 
             # transcribe audio to text
             user_input = stt.transcribe(audio, fs)
