@@ -3,26 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-class BaseLED:
-    def on(self): pass
-    def off(self): pass
-
-class GPIOLED(BaseLED):
-    def __init__(self, pin=18):
-        import RPi.GPIO as GPIO
-        self.GPIO = GPIO
-        self.pin = pin
-        self.GPIO.setmode(GPIO.BCM)
-        self.GPIO.setup(self.pin, GPIO.OUT)
-        self.off()
-
-    def on(self):
-        self.GPIO.output(self.pin, self.GPIO.HIGH)
-
-    def off(self):
-        self.GPIO.output(self.pin, self.GPIO.LOW)
-
-class DummyLED(BaseLED):
+class DummyLED():
     def on(self):
         print("[LED] ON (dummy)")
 
@@ -31,10 +12,11 @@ class DummyLED(BaseLED):
 
 
 def get_led():
-    """Return a GPIOLED on Raspberry Pi, DummyLED elsewhere."""
+    """Return an LED object on Raspberry Pi, DummyLED elsewhere."""
     if os.getenv("PLATFORM") == "pi":
         try:
-            return GPIOLED(pin=int(os.getenv("LED_PIN", 18)))
+            from gpiozero import LED
+            return LED(int(os.getenv("LED_PIN",18)))
         except Exception as e:
             print(f"[LED] Failed to init GPIO, falling back to dummy: {e}")
             return DummyLED()
