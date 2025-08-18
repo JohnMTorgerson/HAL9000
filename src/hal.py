@@ -71,6 +71,7 @@ RATE = 16000 # must be 16000 for porcupine
 CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
+SILENCE_THRESHOLD = os.getenv("SILENCE_THRESHOLD") # loudness below which to start silence counter (e.g. 0.001)
 
 # ------------------------------------------------------------
 # Shared State for recording
@@ -330,8 +331,8 @@ def get_default_device(kind="input"):
 # ------------------------------------------------------------
 # Record until silence (used with wake word detection)
 # ------------------------------------------------------------
-def record_until_silence(stream, initial_audio=None, silence_threshold=0.001,
-                         silence_duration=0.8, fs=RATE, max_duration=12.0):
+def record_until_silence(stream, initial_audio=None, silence_threshold=SILENCE_THRESHOLD,
+                         silence_duration=SILENCE_DURATION, fs=RATE, max_duration=12.0):
     """
     Records audio until a period of silence is detected or max_duration is reached.
     Handles arbitrary device sample rates correctly.
