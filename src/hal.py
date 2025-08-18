@@ -24,7 +24,6 @@ import queue
 import platform
 from led_manager import get_led
 
-
 SYSTEM = platform.system()
 # ------------------ macOS Quartz fix for pynput ------------------ #
 if SYSTEM == "Darwin":
@@ -65,10 +64,10 @@ stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
 # ------------------------------------------------------------
-# Debugging
+# Misc
 # ------------------------------------------------------------
 DEBUG_ON = os.getenv("DEBUG_ON") == "True"
-
+PLATFORM = os.getenv("PLATFORM")
 
 # ------------------------------------------------------------
 # Recording Configuration
@@ -78,6 +77,8 @@ CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
 SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
+if PLATFORM == "pi":
+    sd.default.device = "pulse"
 
 # ------------------------------------------------------------
 # Shared State for recording
