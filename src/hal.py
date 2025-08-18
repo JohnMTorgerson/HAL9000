@@ -77,7 +77,7 @@ RATE = 16000 # must be 16000 for porcupine
 CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
-SILENCE_THRESHOLD = os.getenv("SILENCE_THRESHOLD") # loudness below which to start silence counter (e.g. 0.001)
+SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
 
 # ------------------------------------------------------------
 # Shared State for recording
