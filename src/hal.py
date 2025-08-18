@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import numpy as np
+from scipy.signal import resample_poly
 import sounddevice as sd
 import soundfile as sf
 from dotenv import load_dotenv
@@ -255,27 +256,20 @@ def run():
 # ------------------------------------------------------------
 
 def play_audio(filename):
-    data, sr = sf.read(filename, dtype="float32")
-
-    # Ensure data is at least 2D (samples, channels)
-    if data.ndim == 1:
-        data = data[:, np.newaxis]
+    data, sr = sf.read(filename, dtype="float32", always_2d=True)
 
     output_device, device_sr = get_default_device("output")
 
-    # Resample if needed
+    # Resample if needed (use high-quality polyphase method)
     if sr != device_sr:
-        num_samples = int(data.shape[0] * device_sr / sr)
-        resampled = np.zeros((num_samples, data.shape[1]), dtype=np.float32)
-        for ch in range(data.shape[1]):
-            resampled[:, ch] = np.interp(
-                np.linspace(0, len(data[:, ch]), num_samples),
-                np.arange(len(data[:, ch])),
-                data[:, ch]
-            )
-        data = resampled
+        # ratio = target / original
+        gcd = np.gcd(int(device_sr), int(sr))
+        up = device_sr // gcd
+        down = sr // gcd
+        data = resample_poly(data, up, down, axis=0)
+        sr = device_sr
 
-    sd.play(data, samplerate=device_sr, device=output_device)
+    sd.play(data, samplerate=sr, device=output_device)
     sd.wait()
 
 
