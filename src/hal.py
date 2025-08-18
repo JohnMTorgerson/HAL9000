@@ -78,8 +78,8 @@ CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
 SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
-if PLATFORM == "pi":
-    sd.default.device = "pulse"
+# if PLATFORM == "pi":
+#     sd.default.device = "pulse"
 
 # ------------------------------------------------------------
 # Shared State for recording
@@ -256,23 +256,33 @@ def run():
 # ------------------------------------------------------------
 
 def play_audio(filename):
+    # Read file as float32, always 2D
     data, sr = sf.read(filename, dtype="float32", always_2d=True)
 
-    output_device, device_sr = get_default_device("output")
+    # Ensure stereo
+    if data.shape[1] == 1:
+        data = np.tile(data, (1, 2))
 
-    # Resample if needed (use high-quality polyphase method)
+    # ALSA USB output
+    output_device, device_sr = get_default_device("output")
+    output_device = "hw:3,0"
+
+    # Resample if needed
     if sr != device_sr:
-        # ratio = target / original
         gcd = np.gcd(int(device_sr), int(sr))
         up = device_sr // gcd
         down = sr // gcd
         data = resample_poly(data, up, down, axis=0)
         sr = device_sr
 
+    # normalize audio
+    peak = np.max(np.abs(data))
+    if peak > 0:
+        data = data / peak  # scale so max amplitude is 1.0
+
+    # Play and wait
     sd.play(data, samplerate=sr, device=output_device)
     sd.wait()
-
-
 
 def normalize_audio(audio, peak=0.95):
     """
