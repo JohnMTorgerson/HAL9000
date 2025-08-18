@@ -2,6 +2,7 @@ import wave
 import platform
 import os
 import sys
+import subprocess
 import time
 import numpy as np
 from scipy.signal import resample_poly
@@ -255,34 +256,47 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(filename):
-    # Read file as float32, always 2D
-    data, sr = sf.read(filename, dtype="float32", always_2d=True)
+def play_audio(file_path):
+    try:
+        if SYSTEM == "Darwin":
+            os.system(f"afplay '{file_path}'")
+        elif SYSTEM == "Windows":
+            os.system(f'start "" "{file_path}"')
+        elif SYSTEM == "Linux":
+            os.system(f"aplay '{file_path}'")
+        else:
+            logger.error(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
+    except Exception as e:
+        logger.error(f"Audio playback failed: {e}")
 
-    # Ensure stereo
-    if data.shape[1] == 1:
-        data = np.tile(data, (1, 2))
+# def play_audio(filename):
+#     # Read file as float32, always 2D
+#     data, sr = sf.read(filename, dtype="float32", always_2d=True)
 
-    # ALSA USB output
-    output_device, device_sr = get_default_device("output")
-    output_device = "hw:3,0"
+#     # Ensure stereo
+#     if data.shape[1] == 1:
+#         data = np.tile(data, (1, 2))
 
-    # Resample if needed
-    if sr != device_sr:
-        gcd = np.gcd(int(device_sr), int(sr))
-        up = device_sr // gcd
-        down = sr // gcd
-        data = resample_poly(data, up, down, axis=0)
-        sr = device_sr
+#     # ALSA USB output
+#     output_device, device_sr = get_default_device("output")
+#     # output_device = "hw:3,0"
 
-    # normalize audio
-    peak = np.max(np.abs(data))
-    if peak > 0:
-        data = data / peak  # scale so max amplitude is 1.0
+#     # Resample if needed
+#     if sr != device_sr:
+#         gcd = np.gcd(int(device_sr), int(sr))
+#         up = device_sr // gcd
+#         down = sr // gcd
+#         data = resample_poly(data, up, down, axis=0)
+#         sr = device_sr
 
-    # Play and wait
-    sd.play(data, samplerate=sr, device=output_device)
-    sd.wait()
+#     # normalize audio
+#     peak = np.max(np.abs(data))
+#     if peak > 0:
+#         data = data / peak  # scale so max amplitude is 1.0
+
+#     # Play and wait
+#     sd.play(data, samplerate=sr, device=output_device)
+#     sd.wait()
 
 def normalize_audio(audio, peak=0.95):
     """
