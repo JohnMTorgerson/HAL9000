@@ -65,6 +65,12 @@ stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
 
 # ------------------------------------------------------------
+# Debugging
+# ------------------------------------------------------------
+DEBUG_ON = os.getenv("DEBUG_ON") == "True"
+
+
+# ------------------------------------------------------------
 # Recording Configuration
 # ------------------------------------------------------------
 RATE = 16000 # must be 16000 for porcupine
@@ -163,10 +169,12 @@ def run():
             # normalize recorded audio
             audio = normalize_audio(audio)
 
-            # # save and play back command audio for debugging purposes
-            # sf.write("last_command.wav", audio, fs)
-            # logger.debug("Saved last command to last_command.wav – playing...")
-            # play_audio("last_command.wav")
+            # save and play back command audio for debugging purposes
+            # if DEBUG_ON is set in .env
+            if DEBUG_ON:
+                sf.write("last_command.wav", audio, fs)
+                logger.debug("Saved last command to last_command.wav – playing...")
+                play_audio("last_command.wav")
 
             # transcribe audio to text
             user_input = stt.transcribe(audio, fs)
