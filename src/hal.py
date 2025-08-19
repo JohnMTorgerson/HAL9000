@@ -284,8 +284,10 @@ def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
             release=5
         )
 
-        logger.debug(f"Renormalizing {filename}")
-        audio = normalize(audio)
+        # logger.debug(f"Renormalizing {filename}")
+        # audio = normalize(audio)
+        # Boost overall gain
+        audio = audio + 30.0
     else:
         logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
     
