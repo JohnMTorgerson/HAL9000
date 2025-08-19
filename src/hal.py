@@ -279,14 +279,14 @@ def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
         audio = compress_dynamic_range(
             audio,
             threshold=threshold_dB,
-            ratio=30.0,
+            ratio=100.0,
             attack=5,
             release=5
         )
 
         # Boost overall gain
         logger.debug(f"Boosting gain for {filename}")
-        audio = audio - threshold_dB * 0.95 # I'm doing this because renormalizing wasn't working
+        audio = audio - threshold_dB * 0.8 # I'm doing this because renormalizing wasn't working
 
         # logger.debug(f"Renormalizing {filename}")
         # audio = normalize(audio)
