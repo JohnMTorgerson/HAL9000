@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from piper import PiperVoice, SynthesisConfig
 from pydub import AudioSegment
 from pydub.effects import normalize, compress_dynamic_range
-from cylimiter import Limiter
 import io
 from llm_client import LLMClient
 from whisper_stt import WhisperSTT
@@ -274,24 +273,23 @@ def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
     logger.debug(f"Normalizing {filename}")
     audio = normalize(audio)
         
-    if threshold_dB > 0:
-        # # Apply limiter
-        # logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
-        # audio = compress_dynamic_range(
-        #     audio,
-        #     threshold=threshold_dB,
-        #     ratio=30.0,       # high ratio = hard limiting
-        #     attack=5,
-        #     release=5
-        # )
+    if threshold_dB < 0:
+        # Apply limiter
+        logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
+        audio = compress_dynamic_range(
+            audio,
+            threshold=threshold_dB,
+            ratio=30.0,
+            attack=5,
+            release=5
+        )
+
+        # Boost overall gain
+        logger.debug(f"Boosting gain for {filename}")
+        audio = audio - threshold_dB * 0.95 # I'm doing this because renormalizing wasn't working
 
         # logger.debug(f"Renormalizing {filename}")
         # audio = normalize(audio)
-
-        logger.debug(f"Limiting {filename} at {threshold_dB}dB threshold")
-        limiter = Limiter(attack=0.5, release=0.9, delay=100, threshold=threshold_dB)
-        audio = limiter.limit(audio)
-        limiter.reset()
 
     else:
         logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
