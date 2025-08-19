@@ -11,7 +11,8 @@ import soundfile as sf
 from dotenv import load_dotenv
 from piper import PiperVoice, SynthesisConfig
 from pydub import AudioSegment
-from pydub.effects import normalize
+from pydub.effects import normalize, compress_dynamic_range
+import io
 from llm_client import LLMClient
 from whisper_stt import WhisperSTT
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -72,13 +73,14 @@ DEBUG_ON = os.getenv("DEBUG_ON") == "True"
 PLATFORM = os.getenv("PLATFORM")
 
 # ------------------------------------------------------------
-# Recording Configuration
+# Recording/Playback Configuration
 # ------------------------------------------------------------
 RATE = 16000 # must be 16000 for porcupine
 CHUNK_SIZE = 1024
 PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
 SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
+COMPRESSION_THRESHOLD = float(os.getenv("COMPRESSION_THRESHOLD",0)) # amount to compress audio before playing back
 # if PLATFORM == "pi":
 #     sd.default.device = "pulse"
 
@@ -256,18 +258,73 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(file_path):
-    try:
-        if SYSTEM == "Darwin":
-            os.system(f"afplay '{file_path}'")
-        elif SYSTEM == "Windows":
-            os.system(f'start "" "{file_path}"')
-        elif SYSTEM == "Linux":
-            os.system(f"aplay '{file_path}'")
-        else:
-            logger.error(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
-    except Exception as e:
-        logger.error(f"Audio playback failed: {e}")
+def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
+    """
+    Plays an audio file with optional gain boost and soft limiting to prevent clipping.
+    
+    Parameters:
+        filename: path to WAV file
+        threshold_dB: peak threshold for limiting (dBFS)
+    """
+    # Load audio
+    audio = AudioSegment.from_file(filename, format="wav")
+    
+    # Normalize to -1 dBFS 
+    logger.debug(f"Normalizing {filename}")
+    audio = normalize(audio)
+        
+    if threshold_dB < 0:
+        # Apply limiter
+        logger.debug(f"Compressing {filename}")
+        audio = compress_dynamic_range(
+            audio,
+            threshold=threshold_dB,
+            ratio=30.0,       # high ratio = hard limiting
+            attack=5,
+            release=5
+        )
+
+        logger.debug(f"Renormalizing {filename}")
+        audio = normalize(audio)
+    else:
+        logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
+    
+    # Export to raw data for playback
+    raw_audio = io.BytesIO()
+    audio.export(raw_audio, format="wav")
+    raw_audio.seek(0)
+    
+    # Read back as numpy array for sounddevice
+    data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
+    
+    # Determine output device and sample rate
+    output_device, device_sr = get_default_device("output")
+    
+    # Resample if needed
+    if sr != device_sr:
+        gcd = np.gcd(int(device_sr), int(sr))
+        up = device_sr // gcd
+        down = sr // gcd
+        data = resample_poly(data, up, down, axis=0)
+        sr = device_sr
+    
+    # Play audio
+    sd.play(data, samplerate=sr, device=output_device)
+    sd.wait()
+
+
+# def play_audio(file_path):
+#     try:
+#         if SYSTEM == "Darwin":
+#             os.system(f"afplay '{file_path}'")
+#         elif SYSTEM == "Windows":
+#             os.system(f'start "" "{file_path}"')
+#         elif SYSTEM == "Linux":
+#             os.system(f"aplay '{file_path}'")
+#         else:
+#             logger.error(f"Cannot play audio automatically on {system}. Please open {file_path} manually.")
+#     except Exception as e:
+#         logger.error(f"Audio playback failed: {e}")
 
 # def play_audio(filename):
 #     # Read file as float32, always 2D
