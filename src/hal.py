@@ -258,64 +258,64 @@ def run():
 # Audio functions 
 # ------------------------------------------------------------
 
-def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
-    """
-    Plays an audio file with optional gain boost and soft limiting to prevent clipping.
+# def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
+#     """
+#     Plays an audio file with optional gain boost and soft limiting to prevent clipping.
     
-    Parameters:
-        filename: path to WAV file
-        threshold_dB: peak threshold for limiting (dBFS)
-    """
-    # Load audio
-    audio = AudioSegment.from_file(filename, format="wav")
+#     Parameters:
+#         filename: path to WAV file
+#         threshold_dB: peak threshold for limiting (dBFS)
+#     """
+#     # Load audio
+#     audio = AudioSegment.from_file(filename, format="wav")
     
-    # Normalize to -1 dBFS 
-    logger.debug(f"Normalizing {filename}")
-    audio = normalize(audio)
+#     # Normalize to -1 dBFS 
+#     logger.debug(f"Normalizing {filename}")
+#     audio = normalize(audio)
         
-    if threshold_dB < 0:
-        # Apply limiter
-        logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
-        audio = compress_dynamic_range(
-            audio,
-            threshold=threshold_dB,
-            ratio=100.0,
-            attack=5,
-            release=5
-        )
+#     if threshold_dB < 0:
+#         # Apply limiter
+#         logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
+#         audio = compress_dynamic_range(
+#             audio,
+#             threshold=threshold_dB,
+#             ratio=100.0,
+#             attack=5,
+#             release=5
+#         )
 
-        # Boost overall gain
-        logger.debug(f"Boosting gain for {filename}")
-        audio = audio - threshold_dB * 0.8 # I'm doing this because renormalizing wasn't working
+#         # Boost overall gain
+#         logger.debug(f"Boosting gain for {filename}")
+#         audio = audio - threshold_dB * 0.8 # I'm doing this because renormalizing wasn't working
 
-        # logger.debug(f"Renormalizing {filename}")
-        # audio = normalize(audio)
+#         # logger.debug(f"Renormalizing {filename}")
+#         # audio = normalize(audio)
 
-    else:
-        logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
+#     else:
+#         logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
     
-    # Export to raw data for playback
-    raw_audio = io.BytesIO()
-    audio.export(raw_audio, format="wav")
-    raw_audio.seek(0)
+#     # Export to raw data for playback
+#     raw_audio = io.BytesIO()
+#     audio.export(raw_audio, format="wav")
+#     raw_audio.seek(0)
     
-    # Read back as numpy array for sounddevice
-    data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
+#     # Read back as numpy array for sounddevice
+#     data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
     
-    # Determine output device and sample rate
-    output_device, device_sr = get_default_device("output")
+#     # Determine output device and sample rate
+#     output_device, device_sr = get_default_device("output")
     
-    # Resample if needed
-    if sr != device_sr:
-        gcd = np.gcd(int(device_sr), int(sr))
-        up = device_sr // gcd
-        down = sr // gcd
-        data = resample_poly(data, up, down, axis=0)
-        sr = device_sr
+#     # Resample if needed
+#     if sr != device_sr:
+#         gcd = np.gcd(int(device_sr), int(sr))
+#         up = device_sr // gcd
+#         down = sr // gcd
+#         data = resample_poly(data, up, down, axis=0)
+#         sr = device_sr
     
-    # Play audio
-    sd.play(data, samplerate=sr, device=output_device)
-    sd.wait()
+#     # Play audio
+#     sd.play(data, samplerate=sr, device=output_device)
+#     sd.wait()
 
 
 # def play_audio(file_path):
@@ -331,34 +331,34 @@ def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
 #     except Exception as e:
 #         logger.error(f"Audio playback failed: {e}")
 
-# def play_audio(filename):
-#     # Read file as float32, always 2D
-#     data, sr = sf.read(filename, dtype="float32", always_2d=True)
+def play_audio(filename):
+    # Read file as float32, always 2D
+    data, sr = sf.read(filename, dtype="float32", always_2d=True)
 
-#     # Ensure stereo
-#     if data.shape[1] == 1:
-#         data = np.tile(data, (1, 2))
+    # Ensure stereo
+    if data.shape[1] == 1:
+        data = np.tile(data, (1, 2))
 
-#     # ALSA USB output
-#     output_device, device_sr = get_default_device("output")
-#     # output_device = "hw:3,0"
+    # ALSA USB output
+    output_device, device_sr = get_default_device("output")
+    # output_device = "hw:3,0"
 
-#     # Resample if needed
-#     if sr != device_sr:
-#         gcd = np.gcd(int(device_sr), int(sr))
-#         up = device_sr // gcd
-#         down = sr // gcd
-#         data = resample_poly(data, up, down, axis=0)
-#         sr = device_sr
+    # Resample if needed
+    if sr != device_sr:
+        gcd = np.gcd(int(device_sr), int(sr))
+        up = device_sr // gcd
+        down = sr // gcd
+        data = resample_poly(data, up, down, axis=0)
+        sr = device_sr
 
-#     # normalize audio
-#     peak = np.max(np.abs(data))
-#     if peak > 0:
-#         data = data / peak  # scale so max amplitude is 1.0
+    # normalize audio
+    peak = np.max(np.abs(data))
+    if peak > 0:
+        data = data / peak  # scale so max amplitude is 1.0
 
-#     # Play and wait
-#     sd.play(data, samplerate=sr, device=output_device)
-#     sd.wait()
+    # Play and wait
+    sd.play(data, samplerate=sr, device="pulse")
+    sd.wait()
 
 def normalize_audio(audio, peak=0.95):
     """
