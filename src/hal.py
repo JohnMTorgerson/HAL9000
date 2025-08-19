@@ -275,7 +275,7 @@ def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
         
     if threshold_dB < 0:
         # Apply limiter
-        logger.debug(f"Compressing {filename}")
+        logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
         audio = compress_dynamic_range(
             audio,
             threshold=threshold_dB,
