@@ -81,6 +81,7 @@ PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
 SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
 SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
 COMPRESSION_THRESHOLD = float(os.getenv("COMPRESSION_THRESHOLD",0)) # amount to compress audio before playing back
+HI_PASS_FREQ = int(os.getenv("HI_PASS_FREQ",0))
 # if PLATFORM == "pi":
 #     sd.default.device = "pulse"
 
@@ -332,8 +333,20 @@ def run():
 #         logger.error(f"Audio playback failed: {e}")
 
 def play_audio(filename):
-    # Read file as float32, always 2D
-    data, sr = sf.read(filename, dtype="float32", always_2d=True)
+    # Load audio, apply high pass filter
+    audio = AudioSegment.from_file(filename, format="wav")
+    audio = audio.high_pass_filter(HI_PASS_FREQ)
+
+    # Export to raw data for playback
+    raw_audio = io.BytesIO()
+    audio.export(raw_audio, format="wav")
+    raw_audio.seek(0)
+    
+    # Read back as numpy array for sounddevice
+    data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
+
+    # # Read file as float32, always 2D
+    # data, sr = sf.read(filename, dtype="float32", always_2d=True)
 
     # Ensure stereo
     if data.shape[1] == 1:
