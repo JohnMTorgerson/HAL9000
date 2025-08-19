@@ -357,7 +357,7 @@ def play_audio(filename):
         data = data / peak  # scale so max amplitude is 1.0
 
     # Play and wait
-    sd.play(data, samplerate=sr, device="pulse")
+    sd.play(data, samplerate=sr, device=output_device)
     sd.wait()
 
 def normalize_audio(audio, peak=0.95):
