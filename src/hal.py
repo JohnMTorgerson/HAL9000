@@ -26,6 +26,11 @@ import threading
 import queue
 import platform
 from led_manager import get_led
+import json
+import re
+import spacy
+nlp = spacy.load("en_core_web_sm")
+
 
 SYSTEM = platform.system()
 # ------------------ macOS Quartz fix for pynput ------------------ #
@@ -189,8 +194,22 @@ def run():
             # get HAL's response from LLM
             hal_reply = llm.get_response(user_input)
 
-            # parse response and deal with any API calls
-            if hal_reply.startswith("[EXTERNAL_API_CALL]"):
+            # If HAL claims not to know, force it to try Wikipedia before giving up
+            # first testing if the query looks like a factual question about a named entity we can search for
+            if re.search(r"(i\s+don.?t\s+know|i\s+don.?t\s+have|i.?m\s+sorry.*can.?t\s+do)", hal_reply.strip(), re.I):
+                named_entities = extract_named_entities(user_input)
+                if DEBUG_ON:
+                    logger.debug(f"HAL responded with ignorance: {hal_reply}")
+                    logger.debug(f"Searching for named entities in query...")
+                    logger.debug(f"Named entities: {named_entities}")
+                if looks_factual(user_input) and named_entities is not None:
+                    logger.warning("HAL ignorance detected on factual question – forcing Wikipedia search")
+                    hal_reply = f"[EXTERNAL_API_CALL] wikipedia search {named_entities[0]}"
+                else:
+                    logger.debug("Either no named entities found or question was not parsed as factual. NOT forcing wikipedia search")
+
+            # keep handling API calls until HAL gives a final answer
+            while hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.debug("HAL: Just a moment...")
                 play_audio("HAL-clips/just_a_moment_normalized.aiff")
 
@@ -199,32 +218,15 @@ def run():
                 api_type = command[0].lower()
                 params = command[1:]
 
-                if api_type == "weather":
-                    city = " ".join(params)
-                    api_response = fetch_current_weather(city)
-                elif api_type == "forecast":
-                    try:
-                        days = int(params[-1])
-                        city = " ".join(params[:-1])
-                    except ValueError:
-                        days = 1
-                        city = " ".join(params)
-                    api_response = fetch_weather_forecast(city, days=days)
-                elif api_type == "wolfram":
-                    query = " ".join(params)
-                    api_response = fetch_wolfram_answer(query)
-                elif api_type == "news":
-                    if params:
-                        keyword = " ".join(params)
-                        api_response = fetch_articles_by_keyword(keyword)
-                    else:
-                        api_response = fetch_top_headlines()
-                else:
-                    api_response = f"Unknown API request type: {api_type}"
-
+                api_response = handle_api_call(api_type, params, user_input)
                 enriched_prompt = f"[EXTERNAL_API_RESPONSE] {api_response}"
-                logger.info(f"Enriched prompt for HAL: {enriched_prompt}")
+                if DEBUG_ON:
+                    logger.info(f"Enriched prompt for HAL: {enriched_prompt}") # full response (may be very long)
+                else:
+                    logger.info(f"Enriched prompt for HAL: {(enriched_prompt[:800] + "[…]\n[TRUNCATED (for logging only)]") if len(enriched_prompt) > 800 else enriched_prompt}") # truncated response
+
                 hal_reply = llm.get_response(enriched_prompt)
+
 
             logger.info(f"HAL: {hal_reply}")
 
@@ -254,6 +256,113 @@ def run():
             led.off()
             raise
 
+# ------------------------------------------------------------
+# API CALL
+# ------------------------------------------------------------
+def handle_api_call(api_type, params, user_input):
+    """
+    Executes an external API call based on type and params.
+    Returns a string `api_response` that will be fed back to HAL.
+    """
+    try:
+        if api_type == "weather":
+            city = " ".join(params)
+            return fetch_current_weather(city)
+
+        elif api_type == "forecast":
+            try:
+                days = int(params[-1])
+                city = " ".join(params[:-1])
+            except ValueError:
+                days = 1
+                city = " ".join(params)
+            return fetch_weather_forecast(city, days=days)
+
+        elif api_type == "wolfram":
+            query = " ".join(params)
+            return fetch_wolfram_answer(query)
+
+        elif api_type == "news":
+            if params:
+                keyword = " ".join(params)
+                return fetch_articles_by_keyword(keyword)
+            else:
+                return fetch_top_headlines()
+
+        elif api_type == "wikipedia":
+            subcommand = params[0].lower()
+            if subcommand == "search":
+                query = " ".join(params[1:])
+                from wikipedia_api import search_wikipedia
+                results = search_wikipedia(query)
+                if results:
+                    return (
+                        f"Wikipedia search results for '{query}':\n"
+                        f"{json.dumps(results)}\n\n"
+                        "DO NOT attempt to answer the user's question based on the above information. "
+                        "DO NOT give up on answering the question. Pick the most relevant article from the JSON search results, "
+                        "and respond with another API call as instructed, in order to receive either a summary of the article or "
+                        "the full text of the article. ONLY THEN may you respond to the user."
+                    )
+                else:
+                    return f"No Wikipedia results found for '{query}'."
+
+            elif subcommand == "fetch":
+                mode = params[1].lower() if len(params) > 2 else "summary"
+                title = " ".join(params[2:]).strip('"')  # strip quotes if HAL added them
+                from wikipedia_api import fetch_wikipedia
+                page = fetch_wikipedia(title, mode=mode)
+                helper_prompt = (
+                    f"Use the following Wikipedia article to answer the user's query: '{user_input}'.\n"
+                    f"- Do not summarize the entire article unless explicitly asked.\n"
+                    f"- Do not say 'I'm sorry Torgo. I'm afraid I can't do that.'\n"
+                    f"- Answer directly based on the text."
+                )
+                if mode == "summary":
+                    return f"{helper_prompt}\n\n[ARTICLE START]\n{page['title']} (summary): {page.get('extract','')}\nURL: {page.get('url','')}\n[ARTICLE END]"
+                else:
+                    return f"{helper_prompt}\n\n[ARTICLE START]\n{page['title']} (full article):\n{page.get('text','')}\n[ARTICLE END]"
+
+            else:
+                return f"Unknown Wikipedia subcommand: {subcommand}"
+
+        else:
+            return f"Unknown API request type: {api_type}"
+
+    except Exception as e:
+        logger.error(f"{api_type} API call failed: {e}")
+        return f"{api_type} API error: {e}"
+
+# helper functions to determine if a query looks like a wikipedia question...
+# this is just a fallback if HAL says it doesn't know something
+# (ideally, the LLM should decide on its own when to use wikipedia, but it doesn't always)
+# if it looks like something wikipedia might know, we'll force a wikipedia look up
+
+def looks_factual(query: str) -> bool:
+    FACTUAL_TRIGGERS = [
+        r"\bwho\b",
+        r"\bwhen\b",
+        r"\bwhere\b",
+        r"\bwhat\b",
+        r"\bwhich\b",
+        r"\bhow (old|many|long|far|tall|deep|wide)\b",
+        r"\bwhat year\b",
+    ]
+
+    query = query.lower()
+    return any(re.search(p, query) for p in FACTUAL_TRIGGERS)
+
+def extract_named_entities(user_input: str):
+    """
+    Check if the input contains relevant named entities and return them.
+    """
+    doc = nlp(user_input)
+    entities = []
+    allowed_types = ["PERSON", "ORG", "WORK_OF_ART", "EVENT", "GPE", "LOC"]
+    for ent in doc.ents:
+        if allowed_types is None or ent.label_ in allowed_types:
+            entities.append(ent.text)
+    return entities if entities else None
 
 # ------------------------------------------------------------
 # Audio functions 
@@ -334,7 +443,7 @@ def run():
 
 def play_audio(filename):
     # Load audio, apply high pass filter
-    audio = AudioSegment.from_file(filename, format="wav")
+    audio = AudioSegment.from_file(filename)
     audio = audio.high_pass_filter(HI_PASS_FREQ)
 
     # Export to raw data for playback
