@@ -18,6 +18,8 @@ from whisper_stt import WhisperSTT
 from weather_api import fetch_current_weather, fetch_weather_forecast
 from wolfram_api import fetch_wolfram_answer
 from news_api import fetch_top_headlines, fetch_articles_by_keyword
+from calendar_api import ICloudCalendar
+calendar_backend = ICloudCalendar()
 import pvporcupine
 import logging
 from collections import deque
@@ -362,7 +364,7 @@ def extract_named_entities(user_input: str):
     for ent in doc.ents:
         if allowed_types is None or ent.label_ in allowed_types:
             entities.append(ent.text)
-    return entities if entities else None
+    return entities
 
 # ------------------------------------------------------------
 # Audio functions 
@@ -598,10 +600,12 @@ def record_until_silence(stream, initial_audio=None, silence_threshold=SILENCE_T
         else:
             silence_counter = 0
 
-        logger.debug(f"Chunk {chunks_recorded}: RMS={rms:.6f}, silence_counter={silence_counter}")
+        if DEBUG_ON:
+            logger.debug(f"Chunk {chunks_recorded}: RMS={rms:.6f}, silence_counter={silence_counter}")
 
         if silence_counter >= max_silence_chunks:
-            logger.debug(f"Silence threshold reached after {chunks_recorded} chunks.")
+            if DEBUG_ON:
+               logger.debug(f"Silence threshold reached after {chunks_recorded} chunks.")
             break
 
     duration = time.time() - start_time
