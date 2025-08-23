@@ -30,6 +30,7 @@ import platform
 from led_manager import get_led
 import json
 import re
+import shlex
 import spacy
 nlp = spacy.load("en_core_web_sm")
 
@@ -216,7 +217,7 @@ def run():
                 play_audio("HAL-clips/just_a_moment_normalized.aiff")
 
                 logger.info(f"HAL (external request): {hal_reply}")
-                command = hal_reply[len("[EXTERNAL_API_CALL]"):].strip().split()
+                command = shlex.split(hal_reply[len("[EXTERNAL_API_CALL]"):].strip()) # shlex splits by space, except respect quotes
                 api_type = command[0].lower()
                 params = command[1:]
 
@@ -327,6 +328,12 @@ def handle_api_call(api_type, params, user_input):
 
             else:
                 return f"Unknown Wikipedia subcommand: {subcommand}"
+            
+        elif api_type.startswith("calendar"):
+            subcommand = api_type # for calendar requests, the api_type is also the command: e.g. calendar_search
+            response = calendar_backend.dispatch(subcommand,params)
+            return json.dumps(response)
+
 
         else:
             return f"Unknown API request type: {api_type}"

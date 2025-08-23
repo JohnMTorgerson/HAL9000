@@ -132,14 +132,14 @@ class ICloudService:
             "title": ev.get("title"),
             "location": ev.get("location"),
             "description": ev.get("description"),
-            "start": start_dt,
-            "end": end_dt,
-            "start_str": start_str,
-            "end_str": end_str,
+            # "start": start_dt,
+            # "end": end_dt,
+            "start": start_str,
+            "end": end_str,
             "guid": ev.get("guid"),
             "calendar_guid": cal_guid,
             "calendar_name": cal_name,
-            "raw": ev,
+            # "raw": ev,
         }
 
     

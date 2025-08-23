@@ -150,5 +150,5 @@ if __name__ == "__main__":
                 if 'error' in e.keys():
                     print(e)
                 else:
-                    print(f"- {e['title']} on {e['start_str']}")
+                    print(f"- {e['title']} on {e['start']}")
 
