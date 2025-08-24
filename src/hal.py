@@ -20,6 +20,8 @@ from wolfram_api import fetch_wolfram_answer
 from news_api import fetch_top_headlines, fetch_articles_by_keyword
 from calendar_api import ICloudCalendar
 calendar_backend = ICloudCalendar()
+from sports_api import SportsRouter
+sports_backend = SportsRouter()
 import pvporcupine
 import logging
 from collections import deque
@@ -205,7 +207,7 @@ def run():
                     logger.debug(f"HAL responded with ignorance: {hal_reply}")
                     logger.debug(f"Searching for named entities in query...")
                     logger.debug(f"Named entities: {named_entities}")
-                if looks_factual(user_input) and named_entities is not None:
+                if looks_factual(user_input) and named_entities:
                     logger.warning("HAL ignorance detected on factual question – forcing Wikipedia search")
                     hal_reply = f"[EXTERNAL_API_CALL] wikipedia search {named_entities[0]}"
                 else:
@@ -334,6 +336,18 @@ def handle_api_call(api_type, params, user_input):
             response = calendar_backend.dispatch(subcommand,params)
             return json.dumps(response)
 
+        elif api_type == "sports":
+            if not params or len(params) < 2:
+                return json.dumps({"error": "Missing sports command or params"})
+
+            command = params[0]  # next_game, schedule, standings
+            team_or_league = params[1]
+            if len(params) > 2:
+                team2 = params[2]
+                response = sports_backend.dispatch(command, team_or_league, team2)
+            else:
+                response = sports_backend.dispatch(command, team_or_league)
+            return json.dumps(response)
 
         else:
             return f"Unknown API request type: {api_type}"
