@@ -22,6 +22,8 @@ from calendar_api import ICloudCalendar
 calendar_backend = ICloudCalendar()
 from sports_api import SportsRouter
 sports_backend = SportsRouter()
+from maps_api import MapsRouter
+maps_backend = MapsRouter()
 import pvporcupine
 import logging
 from collections import deque
@@ -348,6 +350,21 @@ def handle_api_call(api_type, params, user_input):
             else:
                 response = sports_backend.dispatch(command, team_or_league)
             return json.dumps(response)
+        
+        elif api_type == "maps":
+            if not params or len(params) < 2:
+                return json.dumps({"error": "Missing maps command or params"})
+
+            command = params[0]  # for now just "search"
+            maps_params = {"query": params[1]}
+
+            if len(params) >= 3:
+                maps_params["radius"] = params[2]
+
+            response = maps_backend.dispatch(command, maps_params)
+
+            return json.dumps(response)
+
 
         else:
             return f"Unknown API request type: {api_type}"
