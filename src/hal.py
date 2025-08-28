@@ -38,6 +38,16 @@ import shlex
 import spacy
 nlp = spacy.load("en_core_web_sm")
 
+# ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
+try:
+    from evdev import InputDevice, ecodes, list_devices
+    _EVDEV_AVAILABLE = True
+except Exception:
+    _EVDEV_AVAILABLE = False
+    InputDevice = None
+    ecodes = None
+    def list_devices():
+        return []
 
 SYSTEM = platform.system()
 # ------------------ macOS Quartz fix for pynput ------------------ #
@@ -411,18 +421,18 @@ def extract_named_entities(user_input: str):
 # def play_audio(filename, threshold_dB=COMPRESSION_THRESHOLD):
 #     """
 #     Plays an audio file with optional gain boost and soft limiting to prevent clipping.
-    
+#     
 #     Parameters:
 #         filename: path to WAV file
 #         threshold_dB: peak threshold for limiting (dBFS)
 #     """
 #     # Load audio
 #     audio = AudioSegment.from_file(filename, format="wav")
-    
+#     
 #     # Normalize to -1 dBFS 
 #     logger.debug(f"Normalizing {filename}")
 #     audio = normalize(audio)
-        
+#         
 #     if threshold_dB < 0:
 #         # Apply limiter
 #         logger.debug(f"Compressing {filename} at {threshold_dB}dB threshold")
@@ -433,28 +443,28 @@ def extract_named_entities(user_input: str):
 #             attack=5,
 #             release=5
 #         )
-
+#
 #         # Boost overall gain
 #         logger.debug(f"Boosting gain for {filename}")
 #         audio = audio - threshold_dB * 0.8 # I'm doing this because renormalizing wasn't working
-
+#
 #         # logger.debug(f"Renormalizing {filename}")
 #         # audio = normalize(audio)
-
+#
 #     else:
 #         logger.debug(f"Compression threshold is {threshold_dB}, not compressing")
-    
+#     
 #     # Export to raw data for playback
 #     raw_audio = io.BytesIO()
 #     audio.export(raw_audio, format="wav")
 #     raw_audio.seek(0)
-    
+#     
 #     # Read back as numpy array for sounddevice
 #     data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
-    
+#     
 #     # Determine output device and sample rate
 #     output_device, device_sr = get_default_device("output")
-    
+#     
 #     # Resample if needed
 #     if sr != device_sr:
 #         gcd = np.gcd(int(device_sr), int(sr))
@@ -462,7 +472,7 @@ def extract_named_entities(user_input: str):
 #         down = sr // gcd
 #         data = resample_poly(data, up, down, axis=0)
 #         sr = device_sr
-    
+#     
 #     # Play audio
 #     sd.play(data, samplerate=sr, device=output_device)
 #     sd.wait()
@@ -654,7 +664,7 @@ def record_until_silence(stream, initial_audio=None, silence_threshold=SILENCE_T
 
 
 # ------------------------------------------------------------
-# Record while spacebar is held 
+# Record while spacebar is held  (Linux uses evdev; others use pynput)
 # ------------------------------------------------------------
 def record_while_spacebar_held(stream, fs=RATE):
     """
@@ -665,13 +675,8 @@ def record_while_spacebar_held(stream, fs=RATE):
     stop_event = threading.Event()
     device_fs = int(stream.samplerate)
 
-    def on_release(key):
-        if key == keyboard.Key.space:
-            stop_event.set()
-            return False
-
-    listener = keyboard.Listener(on_release=on_release)
-    listener.start()
+    # Start a platform-aware release listener (evdev on Linux; pynput elsewhere)
+    _start_spacebar_release_listener(stop_event)
 
     logger.info("Recording command (push-to-talk, hold spacebar)...")
     start_time = time.time()
@@ -689,7 +694,8 @@ def record_while_spacebar_held(stream, fs=RATE):
 
         recording.append(chunk)
 
-    listener.join()
+    # Ensure any listener thread stops
+    stop_event.set()
 
     duration = time.time() - start_time
     audio = np.concatenate(recording) if recording else np.array([], dtype=np.float32)
@@ -713,25 +719,8 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
     buffered_audio_container = {"audio": None}
     input_device, device_fs = get_default_device("input")
 
-    # Start spacebar listener in a separate thread
-    def spacebar_listener():
-        def on_press(key):
-            try:
-                if key == keyboard.Key.space:
-                    trigger_type["value"] = "spacebar"
-                    trigger_event.set()
-                    return False
-            except Exception as e:
-                logger.error(f"Spacebar listener exception: {e}")
-
-        try:
-            listener = keyboard.Listener(on_press=on_press)
-            listener.daemon = True
-            listener.start()
-        except Exception as e:
-            logger.error(f"pynput error: {e}")
-
-    threading.Thread(target=spacebar_listener, daemon=True).start()
+    # Start cross-platform spacebar PRESS listener (Linux uses evdev if available)
+    _start_spacebar_press_listener(trigger_event, trigger_type)
 
     # Set up prebuffer for wake word, using 16k for the frame rate (since we'll convert to that before extending the buffer)
     pre_buffer = deque(maxlen=int(pre_buffer_duration * fs))
@@ -776,6 +765,131 @@ def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
         raise
 
     return trigger_type["value"], stream, buffered_audio_container["audio"]
+
+
+# ------------------------------------------------------------
+# Platform-aware Spacebar listeners (PRESS and RELEASE)
+# ------------------------------------------------------------
+def _start_spacebar_press_listener(trigger_event: threading.Event, trigger_type_dict: dict):
+    """
+    Sets trigger_event when Spacebar is PRESSED (keydown).
+    On Linux: prefer evdev. Else: fall back to pynput.
+    """
+    system = platform.system()
+    if system == "Linux" and _EVDEV_AVAILABLE:
+        t = threading.Thread(target=_evdev_press_worker, args=(trigger_event, trigger_type_dict), daemon=True)
+        t.start()
+        return
+    _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
+
+def _start_spacebar_release_listener(stop_event: threading.Event):
+    """
+    Sets stop_event when Spacebar is RELEASED (keyup).
+    On Linux: prefer evdev. Else: fall back to pynput.
+    """
+    system = platform.system()
+    if system == "Linux" and _EVDEV_AVAILABLE:
+        t = threading.Thread(target=_evdev_release_worker, args=(stop_event,), daemon=True)
+        t.start()
+        return
+    _start_pynput_spacebar_release_listener(stop_event)
+
+def _start_pynput_spacebar_press_listener(trigger_event: threading.Event, trigger_type_dict: dict):
+    def _on_press(key):
+        try:
+            if key == keyboard.Key.space:
+                trigger_type_dict["value"] = "spacebar"
+                trigger_event.set()
+                return False
+        except Exception as e:
+            logger.error(f"Spacebar press listener (pynput) error: {e}")
+    try:
+        listener = keyboard.Listener(on_press=_on_press)
+        listener.daemon = True
+        listener.start()
+    except Exception as e:
+        logger.error(f"Failed to start pynput press listener: {e}")
+
+def _start_pynput_spacebar_release_listener(stop_event: threading.Event):
+    def _on_release(key):
+        try:
+            if key == keyboard.Key.space:
+                stop_event.set()
+                return False
+        except Exception as e:
+            logger.error(f"Spacebar release listener (pynput) error: {e}")
+    try:
+        listener = keyboard.Listener(on_release=_on_release)
+        listener.daemon = True
+        listener.start()
+    except Exception as e:
+        logger.error(f"Failed to start pynput release listener: {e}")
+
+def _evdev_keyboard_device_paths():
+    """
+    Return a list of candidate keyboard event device paths.
+    """
+    paths = []
+    for p in list_devices():
+        try:
+            dev = InputDevice(p)
+            caps = dev.capabilities().get(ecodes.EV_KEY, [])
+            if isinstance(caps, dict):
+                keys = list(caps.keys())
+            else:
+                keys = caps
+            if ecodes.KEY_SPACE in keys:
+                # Prefer devices that look like a keyboard
+                score = 0
+                name = (dev.name or "").lower()
+                phys = (dev.phys or "").lower()
+                if "kbd" in name or "keyboard" in name or "kbd" in phys:
+                    score += 1
+                paths.append((score, p))
+        except Exception:
+            continue
+    # Sort: best candidate first
+    paths.sort(key=lambda x: (-x[0], x[1]))
+    return [p for _, p in paths]
+
+def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict):
+    """
+    Wait for KEY_SPACE down; set trigger_event.
+    """
+    for path in _evdev_keyboard_device_paths():
+        try:
+            dev = InputDevice(path)
+            logger.info(f"Using evdev keyboard device for PRESS: {path} ({dev.name})")
+            for event in dev.read_loop():
+                if event.type == ecodes.EV_KEY and event.code == ecodes.KEY_SPACE and event.value == 1:
+                    trigger_type_dict["value"] = "spacebar"
+                    trigger_event.set()
+                    return
+        except PermissionError:
+            logger.warning(f"Permission denied on evdev device {path}; falling back if possible.")
+        except Exception as e:
+            logger.warning(f"evdev press listener error on {path}: {e}")
+    # Fall back to pynput if evdev failed
+    _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
+
+def _evdev_release_worker(stop_event: threading.Event):
+    """
+    Wait for KEY_SPACE up; set stop_event.
+    """
+    for path in _evdev_keyboard_device_paths():
+        try:
+            dev = InputDevice(path)
+            logger.info(f"Using evdev keyboard device for RELEASE: {path} ({dev.name})")
+            for event in dev.read_loop():
+                if event.type == ecodes.EV_KEY and event.code == ecodes.KEY_SPACE and event.value == 0:
+                    stop_event.set()
+                    return
+        except PermissionError:
+            logger.warning(f"Permission denied on evdev device {path}; falling back if possible.")
+        except Exception as e:
+            logger.warning(f"evdev release listener error on {path}: {e}")
+    # Fall back to pynput if evdev failed
+    _start_pynput_spacebar_release_listener(stop_event)
 
 # ------------------------------------------------------------
 # Entry Point
