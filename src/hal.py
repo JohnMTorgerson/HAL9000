@@ -868,9 +868,8 @@ def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict)
         for path in paths:
             try:
                 d = InputDevice(path)
-                d.set_nonblocking(True)
                 devices.append(d)
-                fd_to_dev[d.fileno()] = d
+                fd_to_dev[getattr(d, "fd", d.fileno())] = d
                 logger.info(f"evdev PRESS watching: {path} ({d.name})")
             except PermissionError:
                 logger.warning(f"evdev PRESS permission denied: {path}")
@@ -881,19 +880,23 @@ def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict)
             return
         poller = select.poll()
         for d in devices:
-            poller.register(d.fileno(), select.POLLIN)
+            poller.register(getattr(d, "fd", d.fileno()), select.POLLIN)
         while not trigger_event.is_set():
             events = poller.poll(500)  # 0.5s timeout to allow graceful exit
             for fd, _ in events:
                 dev = fd_to_dev.get(fd)
                 if not dev:
                     continue
-                for ev in dev.read():
-                    if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value in (1, 2):
-                        logger.debug("evdev: SPACE down detected.")
-                        trigger_type_dict["value"] = "spacebar"
-                        trigger_event.set()
-                        return
+                try:
+                    for ev in dev.read():
+                        if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value in (1, 2):
+                            logger.debug("evdev: SPACE down detected.")
+                            trigger_type_dict["value"] = "spacebar"
+                            trigger_event.set()
+                            return
+                except (BlockingIOError, OSError):
+                    # No events to read despite poll (driver timing); safe to continue
+                    pass
     except Exception as e:
         logger.warning(f"evdev press listener encountered an error; falling back to pynput: {e}")
         _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
@@ -913,9 +916,8 @@ def _evdev_release_worker(stop_event: threading.Event):
         for path in paths:
             try:
                 d = InputDevice(path)
-                d.set_nonblocking(True)
                 devices.append(d)
-                fd_to_dev[d.fileno()] = d
+                fd_to_dev[getattr(d, "fd", d.fileno())] = d
                 logger.info(f"evdev RELEASE watching: {path} ({d.name})")
             except PermissionError:
                 logger.warning(f"evdev RELEASE permission denied: {path}")
@@ -926,18 +928,22 @@ def _evdev_release_worker(stop_event: threading.Event):
             return
         poller = select.poll()
         for d in devices:
-            poller.register(d.fileno(), select.POLLIN)
+            poller.register(getattr(d, "fd", d.fileno()), select.POLLIN)
         while not stop_event.is_set():
             events = poller.poll(500)
             for fd, _ in events:
                 dev = fd_to_dev.get(fd)
                 if not dev:
                     continue
-                for ev in dev.read():
-                    if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value == 0:
-                        logger.debug("evdev: SPACE up detected.")
-                        stop_event.set()
-                        return
+                try:
+                    for ev in dev.read():
+                        if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value == 0:
+                            logger.debug("evdev: SPACE up detected.")
+                            stop_event.set()
+                            return
+                except (BlockingIOError, OSError):
+                    # No events available – harmless
+                    pass
     except Exception as e:
         logger.warning(f"evdev release listener encountered an error; falling back to pynput: {e}")
         _start_pynput_spacebar_release_listener(stop_event)
