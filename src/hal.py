@@ -228,7 +228,7 @@ def run():
 
             # keep handling API calls until HAL gives a final answer
             while hal_reply.startswith("[EXTERNAL_API_CALL]"):
-                logger.debug("HAL: Just a moment...")
+                logger.info("HAL: Just a moment...")
                 play_audio("HAL-clips/just_a_moment_normalized.aiff")
 
                 logger.info(f"HAL (external request): {hal_reply}")
@@ -870,7 +870,7 @@ def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict)
                 d = InputDevice(path)
                 devices.append(d)
                 fd_to_dev[getattr(d, "fd", d.fileno())] = d
-                logger.info(f"evdev PRESS watching: {path} ({d.name})")
+                logger.debug(f"evdev PRESS watching: {path} ({d.name})")
             except PermissionError:
                 logger.warning(f"evdev PRESS permission denied: {path}")
             except Exception as e:
@@ -918,7 +918,7 @@ def _evdev_release_worker(stop_event: threading.Event):
                 d = InputDevice(path)
                 devices.append(d)
                 fd_to_dev[getattr(d, "fd", d.fileno())] = d
-                logger.info(f"evdev RELEASE watching: {path} ({d.name})")
+                logger.debug(f"evdev RELEASE watching: {path} ({d.name})")
             except PermissionError:
                 logger.warning(f"evdev RELEASE permission denied: {path}")
             except Exception as e:
