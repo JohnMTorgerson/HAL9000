@@ -37,6 +37,7 @@ import re
 import shlex
 import spacy
 nlp = spacy.load("en_core_web_sm")
+import select  # for polling multiple evdev devices
 
 # ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
 try:
@@ -854,42 +855,92 @@ def _evdev_keyboard_device_paths():
 
 def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict):
     """
-    Wait for KEY_SPACE down; set trigger_event.
+    Watch ALL candidate keyboard devices; on KEY_SPACE down (or repeat) set trigger_event.
     """
-    for path in _evdev_keyboard_device_paths():
-        try:
-            dev = InputDevice(path)
-            logger.info(f"Using evdev keyboard device for PRESS: {path} ({dev.name})")
-            for event in dev.read_loop():
-                if event.type == ecodes.EV_KEY and event.code == ecodes.KEY_SPACE and event.value == 1:
-                    trigger_type_dict["value"] = "spacebar"
-                    trigger_event.set()
-                    return
-        except PermissionError:
-            logger.warning(f"Permission denied on evdev device {path}; falling back if possible.")
-        except Exception as e:
-            logger.warning(f"evdev press listener error on {path}: {e}")
-    # Fall back to pynput if evdev failed
-    _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
+    paths = _evdev_keyboard_device_paths()
+    if not paths:
+        logger.warning("evdev: no keyboard-like devices found for PRESS; falling back to pynput.")
+        _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
+        return
+    devices = []
+    fd_to_dev = {}
+    try:
+        for path in paths:
+            try:
+                d = InputDevice(path)
+                d.set_nonblocking(True)
+                devices.append(d)
+                fd_to_dev[d.fileno()] = d
+                logger.info(f"evdev PRESS watching: {path} ({d.name})")
+            except PermissionError:
+                logger.warning(f"evdev PRESS permission denied: {path}")
+            except Exception as e:
+                logger.warning(f"evdev PRESS open failed for {path}: {e}")
+        if not devices:
+            _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
+            return
+        poller = select.poll()
+        for d in devices:
+            poller.register(d.fileno(), select.POLLIN)
+        while not trigger_event.is_set():
+            events = poller.poll(500)  # 0.5s timeout to allow graceful exit
+            for fd, _ in events:
+                dev = fd_to_dev.get(fd)
+                if not dev:
+                    continue
+                for ev in dev.read():
+                    if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value in (1, 2):
+                        logger.debug("evdev: SPACE down detected.")
+                        trigger_type_dict["value"] = "spacebar"
+                        trigger_event.set()
+                        return
+    except Exception as e:
+        logger.warning(f"evdev press listener encountered an error; falling back to pynput: {e}")
+        _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
 
 def _evdev_release_worker(stop_event: threading.Event):
     """
-    Wait for KEY_SPACE up; set stop_event.
+    Watch ALL candidate keyboard devices; on KEY_SPACE up set stop_event.
     """
-    for path in _evdev_keyboard_device_paths():
-        try:
-            dev = InputDevice(path)
-            logger.info(f"Using evdev keyboard device for RELEASE: {path} ({dev.name})")
-            for event in dev.read_loop():
-                if event.type == ecodes.EV_KEY and event.code == ecodes.KEY_SPACE and event.value == 0:
-                    stop_event.set()
-                    return
-        except PermissionError:
-            logger.warning(f"Permission denied on evdev device {path}; falling back if possible.")
-        except Exception as e:
-            logger.warning(f"evdev release listener error on {path}: {e}")
-    # Fall back to pynput if evdev failed
-    _start_pynput_spacebar_release_listener(stop_event)
+    paths = _evdev_keyboard_device_paths()
+    if not paths:
+        logger.warning("evdev: no keyboard-like devices found for RELEASE; falling back to pynput.")
+        _start_pynput_spacebar_release_listener(stop_event)
+        return
+    devices = []
+    fd_to_dev = {}
+    try:
+        for path in paths:
+            try:
+                d = InputDevice(path)
+                d.set_nonblocking(True)
+                devices.append(d)
+                fd_to_dev[d.fileno()] = d
+                logger.info(f"evdev RELEASE watching: {path} ({d.name})")
+            except PermissionError:
+                logger.warning(f"evdev RELEASE permission denied: {path}")
+            except Exception as e:
+                logger.warning(f"evdev RELEASE open failed for {path}: {e}")
+        if not devices:
+            _start_pynput_spacebar_release_listener(stop_event)
+            return
+        poller = select.poll()
+        for d in devices:
+            poller.register(d.fileno(), select.POLLIN)
+        while not stop_event.is_set():
+            events = poller.poll(500)
+            for fd, _ in events:
+                dev = fd_to_dev.get(fd)
+                if not dev:
+                    continue
+                for ev in dev.read():
+                    if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value == 0:
+                        logger.debug("evdev: SPACE up detected.")
+                        stop_event.set()
+                        return
+    except Exception as e:
+        logger.warning(f"evdev release listener encountered an error; falling back to pynput: {e}")
+        _start_pynput_spacebar_release_listener(stop_event)
 
 # ------------------------------------------------------------
 # Entry Point
