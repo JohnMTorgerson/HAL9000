@@ -1,6 +1,9 @@
 import subprocess
 import os
+from datetime import datetime
+import json
 from hal_persona_prompt import prompt as HAL_PERSONA_PROMPT
+
 
 # For OpenAI v1+ usage
 try:
@@ -26,9 +29,13 @@ class LLMClient:
                 raise ValueError("OpenAI API key required for OpenAI backend")
             self.client = OpenAI(api_key=openai_api_key)
 
+    def _get_timestamp(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     def get_response(self, user_input):
         # Append user input with role 'user'
-        self.chat_history.append({"role": "user", "content": user_input})
+        self.chat_history.append({"role": "user", "content": f"[{self._get_timestamp()}] {user_input}"})
+        print(f"CHAT HISTORY:\n\n\n{json.dumps(self.chat_history)}\n\n\n")
 
         # Trim chat history if it grows too long
         if len(self.chat_history) > self.max_history * 2:
@@ -51,7 +58,7 @@ class LLMClient:
             reply = response.choices[0].message.content.strip()
 
             # Append assistant reply
-            self.chat_history.append({"role": "assistant", "content": reply})
+            self.chat_history.append({"role": "assistant", "content": f"{reply}"})
             return reply
 
         elif self.backend == "ollama":
@@ -71,7 +78,7 @@ class LLMClient:
                 reply = f"Error calling Ollama: {e}"
 
             # Append assistant reply
-            self.chat_history.append({"role": "assistant", "content": reply})
+            self.chat_history.append({"role": "assistant", "content": f"{reply}"})
             return reply
 
         else:
