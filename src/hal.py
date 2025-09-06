@@ -35,9 +35,8 @@ from led_manager import get_led
 import json
 import re
 import shlex
-import spacy
-nlp = spacy.load("en_core_web_sm")
 import select  # for polling multiple evdev devices
+from helper_funcs import looks_factual, extract_named_entities, strip_name_at_sentence_end
 
 # ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
 try:
@@ -94,6 +93,7 @@ logger.addHandler(stream_handler)
 # ------------------------------------------------------------
 DEBUG_ON = os.getenv("DEBUG_ON") == "True"
 PLATFORM = os.getenv("PLATFORM")
+USER = os.getenv("HAL_USER_NAME", "Dave").capitalize() # Default to "Dave" if HAL_USER_NAME not set in environment
 
 # ------------------------------------------------------------
 # Recording/Playback Configuration
@@ -238,13 +238,19 @@ def run():
 
                 api_response = handle_api_call(api_type, params, user_input)
                 enriched_prompt = f"[EXTERNAL_API_RESPONSE] {api_response}"
-                if DEBUG_ON:
-                    logger.info(f"Enriched prompt for HAL: {enriched_prompt}") # full response (may be very long)
-                else:
-                    logger.info(f"Enriched prompt for HAL: {(enriched_prompt[:800] + "[…]\n[TRUNCATED (for logging only)]") if len(enriched_prompt) > 800 else enriched_prompt}") # truncated response
+
+                if not DEBUG_ON and len(enriched_prompt) > 800:
+                    enriched_prompt = enriched_prompt[:800] + "[...]\n[TRUNCATED (for logging only)]"
+                logger.info(f"Enriched prompt for HAL: {enriched_prompt}")
+
 
                 hal_reply = llm.get_response(enriched_prompt)
 
+            # sanitize HAL's habit of ending sentences with ", {USER}"
+            filtered_reply = strip_name_at_sentence_end(hal_reply, name=USER)
+            if DEBUG_ON and filtered_reply != hal_reply:
+                logger.debug(f"Post-processed HAL reply:\nBEFORE: {hal_reply}\nAFTER : {filtered_reply}")
+            hal_reply = filtered_reply
 
             logger.info(f"HAL: {hal_reply}")
 
@@ -333,7 +339,7 @@ def handle_api_call(api_type, params, user_input):
                 helper_prompt = (
                     f"Use the following Wikipedia article to answer the user's query: '{user_input}'.\n"
                     f"- Do not summarize the entire article unless explicitly asked.\n"
-                    f"- Do not say 'I'm sorry Torgo. I'm afraid I can't do that.'\n"
+                    f"- Do not say 'I'm sorry {USER}. I'm afraid I can't do that.'\n"
                     f"- Answer directly based on the text."
                 )
                 if mode == "summary":
@@ -384,36 +390,9 @@ def handle_api_call(api_type, params, user_input):
         logger.error(f"{api_type} API call failed: {e}")
         return f"{api_type} API error: {e}"
 
-# helper functions to determine if a query looks like a wikipedia question...
-# this is just a fallback if HAL says it doesn't know something
-# (ideally, the LLM should decide on its own when to use wikipedia, but it doesn't always)
-# if it looks like something wikipedia might know, we'll force a wikipedia look up
 
-def looks_factual(query: str) -> bool:
-    FACTUAL_TRIGGERS = [
-        r"\bwho\b",
-        r"\bwhen\b",
-        r"\bwhere\b",
-        r"\bwhat\b",
-        r"\bwhich\b",
-        r"\bhow (old|many|long|far|tall|deep|wide)\b",
-        r"\bwhat year\b",
-    ]
 
-    query = query.lower()
-    return any(re.search(p, query) for p in FACTUAL_TRIGGERS)
 
-def extract_named_entities(user_input: str):
-    """
-    Check if the input contains relevant named entities and return them.
-    """
-    doc = nlp(user_input)
-    entities = []
-    allowed_types = ["PERSON", "ORG", "WORK_OF_ART", "EVENT", "GPE", "LOC"]
-    for ent in doc.ents:
-        if allowed_types is None or ent.label_ in allowed_types:
-            entities.append(ent.text)
-    return entities
 
 # ------------------------------------------------------------
 # Audio functions 

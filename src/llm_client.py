@@ -35,7 +35,7 @@ class LLMClient:
     def get_response(self, user_input):
         # Append user input with role 'user'
         self.chat_history.append({"role": "user", "content": f"[{self._get_timestamp()}] {user_input}"})
-        print(f"CHAT HISTORY:\n\n\n{json.dumps(self.chat_history)}\n\n\n")
+        # print(f"CHAT HISTORY:\n\n\n{json.dumps(self.chat_history)}\n\n\n")
 
         # Trim chat history if it grows too long
         if len(self.chat_history) > self.max_history * 2:
