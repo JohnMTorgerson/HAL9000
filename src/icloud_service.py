@@ -132,8 +132,8 @@ class ICloudService:
             "title": ev.get("title"),
             "location": ev.get("location"),
             "description": ev.get("description"),
-            # "start": start_dt,
-            # "end": end_dt,
+            # "start_dt": start_dt,
+            # "end_dt": end_dt,
             "start": start_str,
             "end": end_str,
             "guid": ev.get("guid"),
@@ -176,6 +176,8 @@ class ICloudService:
         """Get events in a datetime range (supports natural language)."""
         start = self._parse_date_expr(start_expr)
         end   = self._parse_date_expr(end_expr)
+
+        # print(f"Fetching events from {start} to {end}")
 
         # iCloud wants datetimes (not just dates)
         if isinstance(start, datetime.date) and not isinstance(start, datetime.datetime):

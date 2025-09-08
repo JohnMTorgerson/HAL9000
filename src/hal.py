@@ -26,6 +26,7 @@ from maps_api import MapsRouter
 maps_backend = MapsRouter()
 import pvporcupine
 import logging
+from display_log_handler import DisplayPushHandler
 from collections import deque
 from pynput import keyboard
 import threading
@@ -69,6 +70,14 @@ load_dotenv()
 # ------------------------------------------------------------
 # Logging
 # ------------------------------------------------------------
+# ---- Custom "DISPLAY" log level (between INFO and WARNING) ----
+DISPLAY_LEVEL = 25
+logging.addLevelName(DISPLAY_LEVEL, "DISPLAY")
+def display(self, msg, *args, **kwargs):
+    if self.isEnabledFor(DISPLAY_LEVEL):
+        self._log(DISPLAY_LEVEL, msg, args, **kwargs)
+logging.Logger.display = display  # e.g., logger.display("…")
+
 logger = logging.getLogger('HAL')
 logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter("%(asctime)s %(name)s.%(funcName)s() line %(lineno)s %(levelname).5s :: %(message)s")
@@ -87,6 +96,23 @@ stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setLevel(logging.DEBUG)
 stream_handler.setFormatter(formatter)
 logger.addHandler(stream_handler)
+
+# STREAM CLEAN LOGS TO THE DISPLAY (bottom panel)
+display_handler = DisplayPushHandler(
+    base_url=os.getenv("DISPLAY_SERVER_URL", "http://127.0.0.1:8000"),
+    slots=("bottom",),          # or ("top",) if you prefer
+    priority=70,                # below maps/etc. but above slideshow
+    key="logs",                 # stable key so we upsert + refresh TTL
+    ttl_secs=30,                # auto-hide ~30s after last update
+    max_lines=80,
+    max_chars=4000,
+    min_push_interval=0.25,
+    timeout=0.8,
+)
+display_handler.setLevel(DISPLAY_LEVEL) # Only show DISPLAY and above on the screen
+display_handler.setFormatter(logging.Formatter("%(asctime)s :: %(message)s", datefmt="%H:%M:%S")) # Minimal on-screen format
+logger.addHandler(display_handler)
+
 
 # ------------------------------------------------------------
 # Misc
@@ -207,7 +233,7 @@ def run():
 
             # transcribe audio to text
             user_input = stt.transcribe(audio, fs)
-            logger.info(f"USER: {user_input}")
+            logger.display(f"USER: {user_input}")
 
             # get HAL's response from LLM
             hal_reply = llm.get_response(user_input)
@@ -228,10 +254,10 @@ def run():
 
             # keep handling API calls until HAL gives a final answer
             while hal_reply.startswith("[EXTERNAL_API_CALL]"):
-                logger.info("HAL: Just a moment...")
+                logger.display("HAL: Just a moment...")
                 play_audio("HAL-clips/just_a_moment_normalized.aiff")
 
-                logger.info(f"HAL (external request): {hal_reply}")
+                logger.display(f"HAL (external request): {hal_reply}")
                 command = shlex.split(hal_reply[len("[EXTERNAL_API_CALL]"):].strip()) # shlex splits by space, except respect quotes
                 api_type = command[0].lower()
                 params = command[1:]
@@ -252,7 +278,7 @@ def run():
                 logger.debug(f"Post-processed HAL reply:\nBEFORE: {hal_reply}\nAFTER : {filtered_reply}")
             hal_reply = filtered_reply
 
-            logger.info(f"HAL: {hal_reply}")
+            logger.display(f"HAL: {hal_reply}")
 
             # create audio from response text and save to file
             with wave.open("hal_output.wav", "wb") as wav_file:

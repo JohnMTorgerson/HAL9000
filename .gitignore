@@ -3,4 +3,5 @@
 *.wav
 src/__pycache__
 tests/__pycache__
+src/display/__pycache__
 logs/
