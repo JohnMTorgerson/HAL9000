@@ -38,6 +38,7 @@ import re
 import shlex
 import select  # for polling multiple evdev devices
 from helper_funcs import looks_factual, extract_named_entities, strip_name_at_sentence_end
+from display.server_lifecycle import DisplayServerManager
 
 # ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
 try:
@@ -193,6 +194,13 @@ led = get_led()
 def run():
     logger.info("========================= HAL 9000 is now online.\n")
 
+    # start or connect to display server
+    display_mgr = DisplayServerManager(
+        url=os.getenv("DISPLAY_SERVER_URL", "http://127.0.0.1:8000"),
+        logger=logger,
+    )
+    display_mgr.start()
+
     while True:
         try:
             # wait for trigger – either wake word or spacebar press
@@ -298,11 +306,13 @@ def run():
 
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
-            led.off()
             porcupine.delete()
+            display_mgr.stop()
+            led.off()
             sys.exit(0)
 
         except Exception:
+            display_mgr.stop()
             led.off()
             raise
 
