@@ -39,6 +39,9 @@ import shlex
 import select  # for polling multiple evdev devices
 from helper_funcs import looks_factual, extract_named_entities, strip_name_at_sentence_end
 from display.server_lifecycle import DisplayServerManager
+from display_client import DisplayClient
+display = DisplayClient(os.getenv("DISPLAY_SERVER_URL", "http://127.0.0.1:8000"))
+
 
 # ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
 try:
@@ -74,10 +77,10 @@ load_dotenv()
 # ---- Custom "DISPLAY" log level (between INFO and WARNING) ----
 DISPLAY_LEVEL = 25
 logging.addLevelName(DISPLAY_LEVEL, "DISPLAY")
-def display(self, msg, *args, **kwargs):
+def log_display(self, msg, *args, **kwargs):
     if self.isEnabledFor(DISPLAY_LEVEL):
         self._log(DISPLAY_LEVEL, msg, args, **kwargs)
-logging.Logger.display = display  # e.g., logger.display("…")
+logging.Logger.display = log_display  # e.g., logger.display("…")
 
 logger = logging.getLogger('HAL')
 logger.setLevel(logging.DEBUG)
@@ -410,11 +413,38 @@ def handle_api_call(api_type, params, user_input):
 
             command = params[0]  # for now just "search"
             maps_params = {"query": params[1]}
-
             if len(params) >= 3:
                 maps_params["radius"] = params[2]
 
             response = maps_backend.dispatch(command, maps_params)
+
+            # Attempt to extract a list of places from 'response'
+            try:
+                res_obj = response if isinstance(response, (list, dict)) else json.loads(response)
+            except Exception:
+                res_obj = response
+
+            if isinstance(res_obj, list):
+                places = res_obj
+            elif isinstance(res_obj, dict):
+                places = res_obj.get("results") or res_obj.get("items") or res_obj.get("places") or []
+            else:
+                places = []
+
+            # If any place has coordinates, show a map on the top panel
+            has_coords = any(
+                (p.get("lat") or p.get("latitude") or (p.get("geometry", {}).get("location", {}).get("lat") if isinstance(p, dict) else None)) is not None
+                and
+                (p.get("lon") or p.get("lng") or p.get("longitude") or (p.get("geometry", {}).get("location", {}).get("lng") if isinstance(p, dict) else None)) is not None
+                for p in places
+            )
+            if has_coords:
+                try:
+                    display.map(places, on=("top",), priority=80, ttl=120, key="map", fullscreen=False, zoom=14)
+                except Exception as e:
+                    logger.warning(f"Failed to push map overlay: {e}")
+            else:
+                logger.debug("Maps response missing lat/lon; skipping map overlay.")
 
             return json.dumps(response)
 

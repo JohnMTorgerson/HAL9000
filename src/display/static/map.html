@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>HAL Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Leaflet CSS (CDN) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    /* Full-bleed map; panel’s rounded corners/overflow hidden come from styles.css */
+    html, body { height: 100%; margin: 0; background: #000; }
+    #map { width: 100%; height: 100%; }
+    .leaflet-container { background: #000; }
+    .leaflet-control-attribution {
+      background: rgba(0,0,0,0.35);
+      color: #ddd;
+      border-radius: 6px;
+      padding: 0 6px;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Leaflet JS (CDN) -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="/static/map.js"></script>
+</body>
+</html>

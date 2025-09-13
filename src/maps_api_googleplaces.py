@@ -54,6 +54,8 @@ def _format_results(data):
             "address": addr,
             "open_now": open_now,
             "hours": open_hours,
+            "lat": loc.get("latitude") if loc else None,
+            "lon": loc.get("longitude") if loc else None,
             "distance_miles": round(distance, 1) if distance else None
         })
     return results

@@ -16,7 +16,7 @@ body {
     /* true black for kiosk look */
     overflow: hidden;
     /* hide scrollbars */
-    font-family: Futura, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, sans-serif;
+    font-family: Futura, Jost, "Helvetica Neue", Arial, sans-serif;
 }
 
 /* Two stacked panels that fill the screen */
@@ -72,12 +72,12 @@ body {
     background: #000;
 }
 
-/* Centered text block */
+/* text block */
 .panel .text {
     position: absolute;
     inset: 0;
     display: flex;
-    align-items: flex-start;
+    align-items: flex-end;
     justify-content: flex-start;
     text-align: left;
 
