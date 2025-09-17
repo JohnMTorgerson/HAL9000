@@ -5,7 +5,7 @@ from typing import Iterable, Optional, Literal, Dict, Any
 import json
 from urllib.parse import quote
 
-load_dotenv()  # in case DISPLAY_SERVER_URL is in a .env file
+load_dotenv()
 
 PanelSlot = Literal["top", "bottom"]
 ContentType = Literal["image", "text", "url"]
@@ -106,6 +106,7 @@ class DisplayClient:
         uiscale: float | None = None, # UI controls scale (defaults to scale)
         pinscale: float | None = None,# pin/marker scale (defaults to uiscale or scale)
         maptiler_key: str | None = None,
+        my_location: tuple[float, float] | None = None,  # (lat, lon); if None we read env
     ):
         """
         places: list of dicts like:
@@ -163,6 +164,36 @@ class DisplayClient:
             if "strokeWidth" in p:  pin["strokeWidth"] = p["strokeWidth"]
 
             pins.append(pin)
+
+        # ---- add "my location" if available --------------------------------------
+        def _env_first(*names):
+            for n in names:
+                v = os.getenv(n)
+                if v is not None and v != "":
+                    return v
+            return None
+
+        if my_location is None:
+            lat_s = _env_first("MY_LAT", "HOME_LAT", "HAL_HOME_LAT", "USER_LAT", "LAT")
+            lon_s = _env_first("MY_LON", "HOME_LON", "HAL_HOME_LON", "USER_LON", "LON")
+            try:
+                if lat_s is not None and lon_s is not None:
+                    my_location = (float(lat_s), float(lon_s))
+            except Exception:
+                my_location = None
+
+        if my_location:
+            my_lat, my_lon = my_location
+            pins.append({
+                "lat": float(my_lat),
+                "lng": float(my_lon),
+                "label": "You",
+                "isUser": True,                  # <- used by map.js to style differently
+                "color": "#2e9afe",              # blue fill
+                "stroke": "#0b3d91",             # darker blue stroke
+                "size": 8,                       # base radius; map.js scales by pinscale
+                "strokeWidth": 3,
+            })
 
         # Build URL for the vector map page
         url = (

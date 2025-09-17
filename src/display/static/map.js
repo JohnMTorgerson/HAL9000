@@ -37,6 +37,7 @@
             stroke: p.stroke || "#1a1a1a",
             strokeWidth: Number(p.strokeWidth ?? p.sr ?? 2),
             label: String(p.label ?? p.name ?? p.title ?? ""),  // <- include a label if provided
+            isUser: Boolean(p.isUser === true),                 // <- NEW: flag for “my location”
         };
     }
     const rawPins = qs.get("pins") ?? qs.get("markers") ?? qs.get("points");
@@ -234,6 +235,7 @@
                         stroke: p.stroke,
                         sr: p.strokeWidth,
                         label: p.label,        // <- carry label through to GeoJSON feature
+                        isUser: p.isUser === true, // <- NEW
                     },
                 }));
 
@@ -242,30 +244,46 @@
                     data: { type: "FeatureCollection", features },
                 });
 
+                // Stroke ring (darker for user)
                 map.addLayer({
                     id: "pins-stroke",
                     type: "circle",
                     source: "pins",
                     paint: {
-                        "circle-color": ["get", "stroke"],
-                        "circle-radius": ["+", ["*", ["get", "r"], pinScale], ["*", ["get", "sr"], pinScale]],
+                        "circle-color": ["case",
+                            ["==", ["get", "isUser"], true], "#0b3d91",                           // user ring (dark blue)
+                            ["coalesce", ["get", "stroke"], "#1a1a1a"]                              // default ring
+                        ],
+                        "circle-radius": ["+",
+                            ["*", ["case",
+                                ["==", ["get", "isUser"], true], ["*", ["get", "r"], 1.2],         // user slightly bigger
+                                ["get", "r"]
+                            ], pinScale],
+                            ["*", ["get", "sr"], pinScale]
+                        ],
                         "circle-opacity": 0.9,
                     },
                 });
 
+                // Fill (blue for user)
                 map.addLayer({
                     id: "pins-fill",
                     type: "circle",
                     source: "pins",
                     paint: {
-                        "circle-color": ["get", "color"],
-                        "circle-radius": ["*", ["get", "r"], pinScale],
+                        "circle-color": ["case",
+                            ["==", ["get", "isUser"], true], "#2e9afe",                            // user fill (blue)
+                            ["coalesce", ["get", "color"], "#8b0000"]                               // default fill
+                        ],
+                        "circle-radius": ["*", ["case",
+                            ["==", ["get", "isUser"], true], ["*", ["get", "r"], 1.2],
+                            ["get", "r"]
+                        ], pinScale],
                         "circle-opacity": 0.95,
                     },
                 });
 
-                // ---- CHANGE START: keep labels very close to pins ----------------
-                // Small em offset that *shrinks* as pins get bigger so labels stay snug.
+                // Labels kept close to pins
                 const labelOffsetEm = Math.max(0.12, 0.42 / Math.max(0.5, pinScale));
 
                 map.addLayer({
@@ -276,12 +294,8 @@
                         "text-field": ["coalesce", ["get", "label"], ""],
                         "text-font": ["Noto Sans Regular", "Arial Unicode MS Regular"],
                         "text-size": 12 * Math.max(1, pinScale),
-
-                        // Tether the label just to the RIGHT of the pin
                         "text-anchor": "left",
                         "text-offset": [labelOffsetEm, 0],
-
-                        // Prevent collision engine from displacing the label
                         "text-allow-overlap": true,
                         "text-ignore-placement": true
                     },
@@ -292,7 +306,6 @@
                         "text-halo-width": 1.5 * Math.max(1, pinScale),
                     }
                 });
-                // ---- CHANGE END ---------------------------------------------------
 
                 // Center/fit to pins WITHOUT changing zoom for “declutter”.
                 if (features.length === 1) {
@@ -324,7 +337,8 @@
                         r: p.size,
                         stroke: p.stroke,
                         sr: p.strokeWidth,
-                        label: p.label,   // keep label on live updates as well
+                        label: p.label,          // keep label on live updates as well
+                        isUser: p.isUser === true, // keep user flag
                     },
                 })),
             };
