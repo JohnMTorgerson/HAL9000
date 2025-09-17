@@ -94,7 +94,7 @@ body {
 
 /* Small fade animation for content swaps */
 .fade {
-    animation: fadein 160ms ease;
+    animation: fadein 800ms ease;
 }
 
 @keyframes fadein {

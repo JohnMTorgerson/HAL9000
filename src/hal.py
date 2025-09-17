@@ -440,7 +440,7 @@ def handle_api_call(api_type, params, user_input):
             )
             if has_coords:
                 try:
-                    display.map(places, on=("top",), priority=80, ttl=120, key="map", fullscreen=False, zoom=14)
+                    display.map(places, on=("top",), priority=80, ttl=120, key="map", fullscreen=False, scale=4, zoom=14)
                 except Exception as e:
                     logger.warning(f"Failed to push map overlay: {e}")
             else:

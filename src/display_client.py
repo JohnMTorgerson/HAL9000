@@ -91,68 +91,94 @@ class DisplayClient:
         return self.push(type="url", src=src, slots=on, priority=priority,
                          ttl_secs=ttl, key=key, fullscreen=fullscreen, bg=bg)
 
-    # simple Leaflet map overlay that loads /static/map.html with query params
     def map(
         self,
-        places: list,
+        places: list[dict],
         *,
-        on: Iterable[PanelSlot] = ("top",),
+        on=("top",),
         priority: int = 80,
-        ttl: Optional[int] = 120,
-        key: Optional[str] = "map",
+        ttl: int | None = 120,
+        key: str | None = "map",
         fullscreen: bool = False,
-        center: Optional[tuple[float, float]] = None,
+        center: tuple[float, float] | None = None,  # (lat, lon)
         zoom: int = 14,
+        scale: float = 1.8,           # global style scale (labels, icons, line widths)
+        uiscale: float | None = None, # UI controls scale (defaults to scale)
+        pinscale: float | None = None,# pin/marker scale (defaults to uiscale or scale)
+        maptiler_key: str | None = None,
     ):
         """
-        places: list of dicts that include coordinates. Supported keys per place:
-          - lat/lon or latitude/longitude or geometry: {location:{lat, lng}}
-          - name (label for popup)
-          - distance_miles (optional; shown in popup)
+        places: list of dicts like:
+        {
+            "name": "Bryant Hardware",
+            "lat": 44.937805,
+            "lon": -93.290298,
+            "open_now": True,
+            "distance_miles": 0.5,
+            # optional: "label", "distance", "color", "size", "stroke", "strokeWidth", "id", "address"
+        }
         """
-        # Build markers array the map page understands
-        markers = []
+        maptiler_key = maptiler_key or os.getenv("MAPTILER_API_KEY", "")
+        s  = float(scale)
+        ui = float(uiscale) if uiscale is not None else s
+        ps = float(pinscale) if pinscale is not None else ui
+
+        pins = []
         for p in places or []:
-            lat = (
-                p.get("lat")
-                or p.get("latitude")
-                or (p.get("geometry", {}).get("location", {}).get("lat") if isinstance(p, dict) else None)
-            )
-            lon = (
-                p.get("lon")
-                or p.get("lng")
-                or p.get("longitude")
-                or (p.get("geometry", {}).get("location", {}).get("lng") if isinstance(p, dict) else None)
-            )
-            if lat is None or lon is None:
+            lat = p.get("lat")
+            lng = p.get("lng", p.get("lon") or p.get("longitude"))
+            if lat is None or lng is None:
                 continue
-            label = p.get("name") or ""
-            dist = p.get("distance_miles")
-            markers.append({
-                "lat": float(lat),
-                "lon": float(lon),
-                "label": label,
-                "distance": f"{dist:.1f} mi" if isinstance(dist, (int, float)) else None
-            })
 
-        # Center default: param > average markers > env LAT/LON > (0,0)
-        if center is None:
-            if markers:
-                center = (
-                    sum(m["lat"] for m in markers) / len(markers),
-                    sum(m["lon"] for m in markers) / len(markers),
-                )
-            else:
+            # Normalize distance: prefer existing "distance" string, else format miles if present
+            distance_str = None
+            if "distance" in p and isinstance(p["distance"], str):
+                distance_str = p["distance"]
+            elif "distance_miles" in p:
                 try:
-                    center = (float(os.getenv("LAT", "0")), float(os.getenv("LON", "0")))
+                    distance_str = f"{float(p['distance_miles']):.1f} mi"
                 except Exception:
-                    center = (0.0, 0.0)
+                    pass
 
-        markers_q = quote(json.dumps(markers))
-        map_url = f"{self.base}/static/map.html?center={center[0]:.6f},{center[1]:.6f}&zoom={int(zoom)}&markers={markers_q}"
+            # Build pin payload
+            pin = {
+                "lat": float(lat),
+                "lng": float(lng),
+
+                # label shown next to pin on the map (map.js uses this)
+                "label": str(p.get("label") or p.get("name") or p.get("title") or ""),
+
+                # extra metadata for future use
+                "name": p.get("name") or p.get("title"),
+                "open_now": bool(p.get("open_now")) if p.get("open_now") is not None else None,
+                "distance": distance_str,
+                "id": p.get("id"),
+                "address": p.get("address"),
+            }
+
+            # Optional styling (map.js multiplies size/stroke by pinscale)
+            if "color" in p:        pin["color"] = p["color"]
+            if "size" in p:         pin["size"] = p["size"]
+            if "stroke" in p:       pin["stroke"] = p["stroke"]
+            if "strokeWidth" in p:  pin["strokeWidth"] = p["strokeWidth"]
+
+            pins.append(pin)
+
+        # Build URL for the vector map page
+        url = (
+            f"{self.base}/static/map.html?"
+            f"key={quote(maptiler_key)}"
+            f"&scale={s:.3g}"
+            f"&uiscale={ui:.3g}"
+            f"&pinscale={ps:.3g}"
+            f"&zoom={int(zoom)}"
+            f"&pins={quote(json.dumps(pins, separators=(',', ':')))}"
+        )
+        if center is not None and len(center) == 2:
+            url += f"&lat={center[0]:.6f}&lng={center[1]:.6f}"
 
         return self.url(
-            map_url,
+            url,
             on=on,
             priority=priority,
             ttl=ttl,
@@ -160,3 +186,4 @@ class DisplayClient:
             fullscreen=fullscreen,
             bg="#000",
         )
+

@@ -1,42 +1,41 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-  <meta charset="utf-8" />
-  <title>HAL Map</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>HAL Map</title>
 
-  <!-- Leaflet CSS (CDN) -->
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-    crossorigin=""
-  />
+    <!-- Local styles for the embedded map -->
+    <link rel="stylesheet" href="/static/map.css" />
 
-  <link rel="stylesheet" href="/static/styles.css" />
-  <style>
-    /* Full-bleed map; panel’s rounded corners/overflow hidden come from styles.css */
-    html, body { height: 100%; margin: 0; background: #000; }
-    #map { width: 100%; height: 100%; }
-    .leaflet-container { background: #000; }
-    .leaflet-control-attribution {
-      background: rgba(0,0,0,0.35);
-      color: #ddd;
-      border-radius: 6px;
-      padding: 0 6px;
-    }
-  </style>
+    <!-- MapLibre GL -->
+    <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+    <script defer src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+
+    <!-- Your map logic (reads URL params like ?key=...&lat=...&lon=...&zoom=...&places=[...]) -->
+    <script defer src="/static/map.js"></script>
+
+    <!-- Keep the iframe background transparent and remove default margins -->
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+            background: transparent;
+        }
+    </style>
 </head>
+
 <body>
-  <div id="map"></div>
+    <!-- Container the JS will render into -->
+    <div id="map-root" aria-label="Map viewport">
+        <div id="map"></div>
+    </div>
 
-  <!-- Leaflet JS (CDN) -->
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-    crossorigin=""
-  ></script>
-
-  <script src="/static/map.js"></script>
+    <!-- Example params:
+       /static/map.html?key=YOUR_MAPTILER_KEY&lat=44.98&lon=-93.27&zoom=13&fitBounds=true&places=[{"name":"Bryant Hardware","lat":44.95,"lon":-93.29}]
+  -->
 </body>
+
 </html>
