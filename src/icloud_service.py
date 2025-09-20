@@ -28,6 +28,8 @@ class ICloudService:
         # {}       => attempted and failed (disable further attempts this run)
         self._calendar_title_cache: Optional[Dict[str, Optional[str]]] = None
 
+        self.weekend_start_hour = int(os.getenv("WEEKEND_START_HOUR", "17"))  # default 17:00 local
+
     def handle_authentication(self):
         """Handle iCloud 2FA/2SA if required."""
         api = self.api
@@ -215,6 +217,55 @@ class ICloudService:
                 raise ValueError(f"Couldn't parse date expression: {expr}")
             return parsed
         raise TypeError(f"Unsupported date expression type: {type(expr)}")
+    
+    def _weekend_bounds(self, reference_dt: datetime.datetime | None = None, for_next: bool = False):
+        """
+        Returns (start_dt, end_dt, friday_date) for the desired weekend.
+
+        - this weekend (for_next=False):
+            * If now < Fri@start_hour  -> start = Fri@start_hour
+            * If Fri@start_hour <= now <= Sun@23:59:59.999999 -> start = now
+            * If now > Sun end -> rolls to next weekend (Fri..Sun)
+        - next weekend (for_next=True): always the following Fri..Sun.
+
+        All datetimes are naive (local), consistent with the rest of this service.
+        """
+        now = reference_dt or datetime.datetime.now()
+        today = now.date()
+        weekday = today.weekday()  # Mon=0 ... Fri=4 Sat=5 Sun=6
+
+        # Friday of the current Fri–Sun block (for Mon–Thu this is upcoming Friday;
+        # for Fri it's today; for Sat/Sun it's the Friday that just passed).
+        this_week_fri = today - datetime.timedelta(days=(weekday - 4))
+        this_fri_start = datetime.datetime.combine(
+            this_week_fri, datetime.time(self.weekend_start_hour, 0, 0)
+        )
+        this_sun_end = datetime.datetime.combine(
+            this_week_fri + datetime.timedelta(days=2),
+            datetime.time(23, 59, 59, 999999),
+        )
+
+        if for_next:
+            weekend_fri = this_week_fri + datetime.timedelta(days=7)
+        else:
+            # If we've already passed this Sunday, move to the next weekend.
+            weekend_fri = this_week_fri if now <= this_sun_end else this_week_fri + datetime.timedelta(days=7)
+
+        start_candidate = datetime.datetime.combine(
+            weekend_fri, datetime.time(self.weekend_start_hour, 0, 0)
+        )
+        end_dt = datetime.datetime.combine(
+            weekend_fri + datetime.timedelta(days=2),
+            datetime.time(23, 59, 59, 999999),
+        )
+
+        # If we're currently inside the chosen weekend window, start = now.
+        if not for_next and start_candidate <= now <= end_dt:
+            start_dt = now
+        else:
+            start_dt = start_candidate
+
+        return start_dt, end_dt, weekend_fri
 
     def events_in_range(self, start_expr, end_expr, calendar=None):
         """Get events in a datetime range (supports natural language)."""
@@ -292,6 +343,18 @@ class ICloudService:
         end_dt = datetime.datetime.combine(end, datetime.time.max)
 
         return self.events_in_range(start_dt, end_dt, calendar)
+
+    def events_this_weekend(self, calendar=None):
+        """Events from upcoming Fri@WEEKEND_START_HOUR through end of Sunday;
+        if currently in that window, start=now."""
+        start_dt, end_dt, _ = self._weekend_bounds(for_next=False)
+        return self.events_in_range(start_dt, end_dt, calendar)
+
+    def events_next_weekend(self, calendar=None):
+        """Events for the following weekend (Fri@WEEKEND_START_HOUR .. Sun end)."""
+        start_dt, end_dt, _ = self._weekend_bounds(for_next=True)
+        return self.events_in_range(start_dt, end_dt, calendar)
+
 
     def search_events(self, keyword, days_ahead=30, calendar=None):
         """Search for an event by keyword in any text field in the next N days."""

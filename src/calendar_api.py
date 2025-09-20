@@ -31,12 +31,16 @@ class CalendarBackend(ABC):
                 date_expr = params[0]
                 cal_name = self._resolve_calendar_name(params[1] if len(params) > 1 else None)
 
-                # Special routing for "this week" and "next week"
+                # Special routing for "this week(end)" and "next week(end)"
                 normalized_expr = date_expr.lower().strip()
                 if normalized_expr == "this week":
                     return self.events_this_week(cal_name)
                 elif normalized_expr in ["next week","this coming week"]:
                     return self.events_next_week(cal_name)
+                elif normalized_expr == "this weekend":
+                    return self.events_this_weekend(cal_name)
+                elif normalized_expr in ["next weekend"]:
+                    return self.events_next_weekend(cal_name)
                 else:
                     return self.events_on_date(date_expr, cal_name)
 
@@ -55,6 +59,14 @@ class CalendarBackend(ABC):
 
     @abstractmethod
     def events_next_week(self, calendar: Optional[str] = None) -> List[dict]:
+        pass
+
+    @abstractmethod
+    def events_this_weekend(self, calendar: Optional[str] = None) -> List[dict]:
+        pass
+
+    @abstractmethod
+    def events_next_weekend(self, calendar: Optional[str] = None) -> List[dict]:
         pass
 
     @abstractmethod
@@ -87,6 +99,12 @@ class ICloudCalendar(CalendarBackend):
 
     def events_next_week(self, calendar: Optional[str] = None) -> List[dict]:
         return self.service.events_next_week(calendar)
+    
+    def events_this_weekend(self, calendar: Optional[str] = None) -> List[dict]:
+        return self.service.events_this_weekend(calendar)
+
+    def events_next_weekend(self, calendar: Optional[str] = None) -> List[dict]:
+        return self.service.events_next_weekend(calendar)
 
     def search_events(self, query: str) -> List[dict]:
         return self.service.search_events(query)

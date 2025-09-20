@@ -222,6 +222,7 @@ class DisplayClient:
     def calendar(self,
                 events: list[dict],
                 *,
+                tz: str = os.getenv("TIMEZONE", "America/Chicago"),
                 on=("top",),
                 priority: int = 80,
                 ttl: int | None = 120,
@@ -238,7 +239,7 @@ class DisplayClient:
         { "title": str, "start": <iso or human>, "end": <iso or human>,
             "location": str, "open_now": bool }
         """
-        q = f"title={quote(title)}&code={quote(code)}"
+        q = f"title={quote(title)}&code={quote(code)}&tz={quote(tz)}"
         if accent:
             q += f"&accent={quote(accent)}"
         if limit:

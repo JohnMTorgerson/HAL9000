@@ -299,6 +299,12 @@ prompt = "".join([
         User: What's on the docket next week?
         HAL: [EXTERNAL_API_CALL] calendar_on_date "next week"
 
+        User: What's going on next weekend?
+        HAL: [EXTERNAL_API_CALL] calendar_on_date "next weekend"
+
+        User: Do I have anything this weekend?
+        HAL: [EXTERNAL_API_CALL] calendar_on_date "this weekend"
+
         User: Do I have anything planned for September 9th?
         HAL: [EXTERNAL_API_CALL] calendar_on_date "September 9th"
 

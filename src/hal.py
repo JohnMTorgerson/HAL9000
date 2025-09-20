@@ -398,6 +398,7 @@ def handle_api_call(api_type, params, user_input):
             # each item can have: title, start, end, location (strings), open_now (bool)
             display.calendar(
                 response,
+                tz=os.getenv("TIMEZONE", "America/Chicago"),
                 on=("top",),
                 priority=80,
                 ttl=90,                 # hide after ~90s of inactivity
