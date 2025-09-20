@@ -1,0 +1,69 @@
+/* =========================
+   Eurostile
+   ========================= */
+@font-face {
+    font-family: 'Eurostile';
+    src: url('/static/fonts/EurostileBQ-BoldExtended.woff2') format('woff2');
+    font-weight: 800;
+    /* Bold Extended */
+    font-style: normal;
+    font-stretch: expanded;
+    /* wider width */
+    font-display: swap;
+}
+
+/* =========================
+   Futura (normal width)
+   ========================= */
+@font-face {
+    font-family: 'Futura';
+    src: url('/static/fonts/Futura-Medium.woff2') format('woff2');
+    font-weight: 500;
+    /* Medium */
+    font-style: normal;
+    font-stretch: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Futura';
+    src: url('/static/fonts/Futura-MediumItalic.woff2') format('woff2');
+    font-weight: 500;
+    /* Medium Italic */
+    font-style: italic;
+    font-stretch: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Futura';
+    src: url('/static/fonts/Futura-Bold.woff2') format('woff2');
+    font-weight: 700;
+    /* Bold */
+    font-style: normal;
+    font-stretch: normal;
+    font-display: swap;
+}
+
+/* =========================
+   Futura (condensed width)
+   ========================= */
+@font-face {
+    font-family: 'Futura';
+    src: url('/static/fonts/Futura-CondensedMedium.woff2') format('woff2');
+    font-weight: 500;
+    /* Condensed Medium */
+    font-style: normal;
+    font-stretch: condensed;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Futura';
+    src: url('/static/fonts/Futura-CondensedExtraBold.woff2') format('woff2');
+    font-weight: 800;
+    /* Condensed ExtraBold */
+    font-style: normal;
+    font-stretch: condensed;
+    font-display: swap;
+}

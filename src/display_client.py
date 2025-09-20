@@ -91,6 +91,7 @@ class DisplayClient:
         return self.push(type="url", src=src, slots=on, priority=priority,
                          ttl_secs=ttl, key=key, fullscreen=fullscreen, bg=bg)
 
+    # -------- API displays --------
     def map(
         self,
         places: list[dict],
@@ -218,3 +219,35 @@ class DisplayClient:
             bg="#000",
         )
 
+    def calendar(self,
+                events: list[dict],
+                *,
+                on=("top",),
+                priority: int = 80,
+                ttl: int | None = 120,
+                key: str | None = "calendar",
+                fullscreen: bool = False,
+                title: str = "Schedule",
+                code: str = "GPM 72–KC",
+                accent: str | None = None,
+                limit: int | None = None):
+        """
+        Show a HAL-styled calendar board.
+
+        events: list of dicts with fields like:
+        { "title": str, "start": <iso or human>, "end": <iso or human>,
+            "location": str, "open_now": bool }
+        """
+        q = f"title={quote(title)}&code={quote(code)}"
+        if accent:
+            q += f"&accent={quote(accent)}"
+        if limit:
+            q += f"&limit={int(limit)}"
+
+        payload = quote(json.dumps(events, separators=(",", ":")))
+        url = f"{self.base}/static/calendar.html?{q}&events={payload}"
+
+        return self.url(
+            url, on=on, priority=priority, ttl=ttl, key=key,
+            fullscreen=fullscreen, bg="#000"
+        )

@@ -1,0 +1,161 @@
+/* ===== THEME ===== */
+:root {
+    /* HAL-ish magenta gradient */
+    --bg: radial-gradient(140% 120% at 50% 0%,
+            #6b0f23 0%, #4b0c1b 45%, #200812 100%);
+    --accent: #1de9d6;
+    --text: #ffeef5;
+    --muted: #ffd6e6;
+    --row-bg: rgba(0, 0, 0, .38);
+    --row-border: rgba(29, 233, 214, .22);
+}
+
+/* Optional teal: set <body class="theme-teal"> */
+.theme-teal {
+    --bg: linear-gradient(180deg, #062c2d 0%, #0d3b3d 50%, #031a1b 100%);
+    --text: #e9fffb;
+    --muted: #b9f3ec;
+}
+
+/* ===== BASE ===== */
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Futura", "Futura PT", "Avenir Next", "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.hal-panel {
+    position: fixed;
+    inset: 0;
+    padding: 22px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+/* ===== HEADER ===== */
+.hal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding: 6px 2px 12px;
+    border-bottom: 2px solid rgba(255, 255, 255, .08);
+}
+
+.hal-code {
+    font-family: "Eurostile", "Microgramma", "Square 721", "Orbitron", system-ui, sans-serif;
+    color: var(--accent);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    font-weight: 800;
+    font-size: clamp(22px, 4.2vh, 48px);
+}
+
+.hal-title {
+    font-family: "Eurostile", "Microgramma", "Square 721", "Orbitron", system-ui, sans-serif;
+    color: var(--accent);
+    font-weight: 900;
+    text-transform: uppercase;
+    font-size: clamp(28px, 6.0vh, 72px);
+    letter-spacing: .06em;
+}
+
+/* ===== LIST ===== */
+.events {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    overflow: auto;
+    scrollbar-width: thin;
+}
+
+/* Each event: stacked layout (time line, then indented summary) */
+.event {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 18px 20px;
+    border-radius: 20px;
+    background: var(--row-bg);
+    outline: 2px solid transparent;
+}
+
+.event.now {
+    outline-color: var(--row-border);
+    box-shadow: 0 0 0 6px var(--row-border) inset;
+}
+
+/* One-line, non-wrapping time label */
+.time {
+    font-size: clamp(34px, 7.2vh, 88px);
+    line-height: 1.02;
+    color: var(--muted);
+    white-space: nowrap;
+}
+
+.nowrap {
+    white-space: nowrap;
+}
+
+/* Indented block for title/location (future extras live here too) */
+.summary {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    padding-left: clamp(36px, 4.0vw, 72px);
+    /* visual indent */
+}
+
+.title {
+    font-weight: 900;
+    font-size: clamp(36px, 7.6vh, 96px);
+    line-height: 1.04;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.loc {
+    color: var(--muted);
+    font-size: clamp(22px, 4.6vh, 56px);
+    line-height: 1.06;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: .9;
+}
+
+.tag {
+    margin-left: .6em;
+    padding: .22em .7em;
+    border: 2px solid var(--accent);
+    color: var(--accent);
+    border-radius: 999px;
+    font-family: "Eurostile", "Microgramma", "Square 721", "Orbitron", system-ui, sans-serif;
+    font-size: .9em;
+    letter-spacing: .04em;
+}
+
+/* Scrollbar (WebKit) */
+.events::-webkit-scrollbar {
+    width: 12px;
+}
+
+.events::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, .22);
+    border-radius: 10px;
+}

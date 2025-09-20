@@ -43,6 +43,9 @@ class CalendarBackend(ABC):
             else:
                 raise ValueError(f"Unknown calendar command: {command}")
         except ValueError as e:
+            # import traceback, sys
+            # print("[calendar_api] Exception:", e, file=sys.stderr)
+            # traceback.print_exc()  # prints the full stack trace to stderr
             return {'error':f"I'm sorry, there was an error when accessing your calendar: {e}"}
         
 
