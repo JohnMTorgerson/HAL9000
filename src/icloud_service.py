@@ -53,8 +53,14 @@ class ICloudService:
                 api.confirm_security_key(selected_device)
             else:
                 print("Two-factor authentication required.")
-                code = input("Enter the code sent to your device: ")
+
+                # Newer Apple authentication flow requires explicitly requesting
+                # delivery of the verification code.
+                api.request_2fa_code()
+
+                code = input("Enter the code sent to your trusted device or phone: ")
                 result = api.validate_2fa_code(code)
+
                 if not result:
                     print("Failed to verify 2FA code")
                     sys.exit(1)
