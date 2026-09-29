@@ -19,7 +19,7 @@ class ICloudService:
         if not apple_id or not app_password:
             raise ValueError("Missing APPLE_ID or ICLOUD_PWD in environment")
 
-        self.api = PyiCloudService(apple_id, app_password)
+        self.api = PyiCloudService(apple_id, app_password, accept_terms=True)
         self.handle_authentication()
 
         # --- Safe calendar-title cache -----------------------------------------
