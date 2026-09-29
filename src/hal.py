@@ -107,6 +107,7 @@ logger.addHandler(display_handler)
 # Misc
 # ------------------------------------------------------------
 DEBUG_ON = os.getenv("DEBUG_ON") == "True"
+DEBUG_PLAYBACK = os.getenv("DEBUG_PLAYBACK", "false").strip().lower() in ("1", "true", "yes", "on")
 PLATFORM = os.getenv("PLATFORM")
 USER = os.getenv("HAL_USER_NAME", "Dave").capitalize() # Default to "Dave" if HAL_USER_NAME not set in environment
 
@@ -185,11 +186,12 @@ def run():
             # normalize recorded audio
             audio = normalize_audio(audio)
 
-            # save and play back command audio for debugging purposes
-            # if DEBUG_ON is set in .env
-            if DEBUG_ON:
+            # Keep the debug recording; replay requires its own explicit opt-in.
+            if DEBUG_ON or DEBUG_PLAYBACK:
                 sf.write("last_command.wav", audio, fs)
-                logger.debug("Saved last command to last_command.wav – playing...")
+                logger.debug("Saved last command to last_command.wav")
+            if DEBUG_PLAYBACK:
+                logger.debug("DEBUG_PLAYBACK enabled – playing last command...")
                 play_audio("last_command.wav")
 
             # transcribe audio to text

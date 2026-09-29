@@ -167,7 +167,7 @@ class MainLoopTests(unittest.TestCase):
             'play_audio', 'handle_api_call')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
-            'sys': sys, 're': re, 'shlex': shlex, 'DEBUG_ON': False,
+            'sys': sys, 're': re, 'shlex': shlex, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
             'normalize_audio': lambda audio: audio,
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,

@@ -153,6 +153,12 @@ mode with `WAKE_ENABLED=false`.
 
 ## Optional tuning
 
+Query playback is off by default, including when `DEBUG_ON=True`. To hear each
+recorded query before transcription, set `DEBUG_PLAYBACK=True` in `.env` and
+restart HAL. Leave it unset or set `DEBUG_PLAYBACK=False` for normal use.
+`DEBUG_ON=True` still saves `last_command.wav` for inspection; enabling
+`DEBUG_PLAYBACK` also saves that file even if general debugging is off.
+
 The tested defaults require no new `.env` entries. Available settings:
 
 | Setting | Default | Purpose |
@@ -167,6 +173,7 @@ The tested defaults require no new `.env` entries. Available settings:
 | `WAKE_NORMALIZATION` | `capped` | `capped` or full `peak` normalization |
 | `VOICE_MAX_SECONDS` | `25` | Maximum buffered command length |
 | `WAKE_MODEL_DIR` | `src/wake-models` | Override the model cache |
+| `DEBUG_PLAYBACK` | `false` | Play the recorded query before transcription |
 
 For a tiny comparison, set `WAKE_MODELS=tiny.en`, run `python src/setup_wake.py`
 from the repository root, then start HAL normally. `WAKE_MODELS="tiny.en base.en"` runs both models sequentially and accepts either; it costs extra
