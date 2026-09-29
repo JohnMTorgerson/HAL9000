@@ -1,13 +1,18 @@
 # icloud_service.py
 
 import os
-import sys
 import datetime
 import dateparser
 from dotenv import load_dotenv
 from pyicloud import PyiCloudService
+from pyicloud.exceptions import PyiCloudException
+from requests.exceptions import RequestException
 import click
 from typing import Optional, Dict
+
+
+class ICloudAuthenticationError(RuntimeError):
+    """Calendar access is unavailable because sign-in did not complete."""
 
 
 class ICloudService:
@@ -17,10 +22,13 @@ class ICloudService:
         app_password = app_password or os.getenv("ICLOUD_PWD")
 
         if not apple_id or not app_password:
-            raise ValueError("Missing APPLE_ID or ICLOUD_PWD in environment")
+            raise ICloudAuthenticationError("Missing APPLE_ID or ICLOUD_PWD in environment.")
 
         self.api = PyiCloudService(apple_id, app_password, accept_terms=True)
-        self.handle_authentication()
+        if not self.handle_authentication():
+            raise ICloudAuthenticationError(
+                "Verification was skipped or did not complete. Restart HAL to sign in again."
+            )
 
         # --- Safe calendar-title cache -----------------------------------------
         # None     => not attempted yet
@@ -31,7 +39,7 @@ class ICloudService:
         self.weekend_start_hour = int(os.getenv("WEEKEND_START_HOUR", "17"))  # default 17:00 local
 
     def handle_authentication(self):
-        """Handle iCloud 2FA/2SA if required."""
+        """Return whether iCloud authentication completed; never exit HAL."""
         api = self.api
 
         if api.requires_2fa:
@@ -41,51 +49,132 @@ class ICloudService:
                     f"Security key confirmation required. "
                     f"Plug in one of: {', '.join(security_key_names)}"
                 )
-                devices = api.fido2_devices
+                devices = list(api.fido2_devices)
+                if not devices:
+                    print("No FIDO2 device found. Skipping iCloud Calendar.")
+                    return False
                 for idx, dev in enumerate(devices, start=1):
                     print(f"{idx}: {dev}")
-                choice = click.prompt(
-                    "Select a FIDO2 device by number",
-                    type=click.IntRange(1, len(devices)),
-                    default=1,
-                )
+                try:
+                    choice = click.prompt(
+                        "Select a FIDO2 device by number",
+                        type=click.IntRange(1, len(devices)),
+                        default=1,
+                    )
+                except click.Abort:
+                    return False
                 selected_device = devices[choice - 1]
                 api.confirm_security_key(selected_device)
             else:
                 print("Two-factor authentication required.")
 
-                # Newer Apple authentication flow requires explicitly requesting
-                # delivery of the verification code.
-                api.request_2fa_code()
-
-                code = input("Enter the code sent to your trusted device or phone: ")
-                result = api.validate_2fa_code(code)
-
-                if not result:
-                    print("Failed to verify 2FA code")
-                    sys.exit(1)
+                if not self._verify_code(api.request_2fa_code, api.validate_2fa_code,
+                                         two_factor=True):
+                    return False
 
             if not api.is_trusted_session:
                 print("Requesting trust...")
-                api.trust_session()
+                if not api.trust_session():
+                    print("iCloud session trust did not complete.")
+                    return False
 
         elif api.requires_2sa:
             print("Two-step authentication required. Your trusted devices:")
-            devices = api.trusted_devices
+            devices = api.trusted_devices or []
+            if not devices:
+                print("No trusted devices found. Skipping iCloud Calendar.")
+                return False
             for i, device in enumerate(devices):
                 label = device.get("deviceName", f"SMS to {device.get('phoneNumber')}")
                 print(f"{i}: {label}")
 
-            device_index = click.prompt("Which device?", default=0)
+            try:
+                device_index = click.prompt("Which device?", default=0,
+                                            type=click.IntRange(0, len(devices) - 1))
+            except click.Abort:
+                return False
             device = devices[device_index]
-            if not api.send_verification_code(device):
-                print("Failed to send verification code")
-                sys.exit(1)
+            if not self._verify_code(lambda: api.send_verification_code(device),
+                                     lambda code: api.validate_verification_code(device, code),
+                                     two_factor=False):
+                return False
 
-            code = click.prompt("Enter validation code")
-            if not api.validate_verification_code(device, code):
-                print("Failed to verify code")
-                sys.exit(1)
+        return not api.requires_2fa and not api.requires_2sa
+
+    def _verify_code(self, request_code, validate_code, *, two_factor):
+        """Bounded, interactive retries without automatically sending more codes."""
+        attempts = 0
+        requests = 0
+        send = True
+        consumed = False
+        delivery = "unknown"
+        while attempts < 3:
+            if send:
+                if requests >= 3:
+                    print("Code request limit reached. Skipping iCloud Calendar for this run.")
+                    return False
+                requests += 1
+                try:
+                    if not request_code():
+                        print("iCloud could not send a verification code. Skipping Calendar.")
+                        return False
+                except (PyiCloudException, RequestException) as exc:
+                    print(f"iCloud code delivery failed ({type(exc).__name__}). Skipping Calendar.")
+                    return False
+                send = False
+                consumed = False
+                delivery = getattr(self.api, "two_factor_delivery_method", "unknown") if two_factor else "selected_device"
+                notice = getattr(self.api, "two_factor_delivery_notice", None) if two_factor else None
+                if notice:
+                    print(notice)
+                if delivery == "sms":
+                    print("This verification uses SMS. Use the text-message code, not a Mac/iPhone pop-up code.")
+                elif delivery == "trusted_device":
+                    print("This verification uses a trusted-device prompt. Use the code from this sign-in request.")
+
+            if consumed:
+                prompt = "Enter r for a new trusted-device code, or press Enter to skip iCloud Calendar: "
+            else:
+                label = {"sms": "SMS", "trusted_device": "trusted-device",
+                         "selected_device": "selected-device"}.get(delivery, "verification")
+                prompt = f"Enter the {label} code (r = resend; Enter or s = skip iCloud Calendar): "
+            try:
+                choice = input(prompt).strip()
+            except EOFError:
+                print("No interactive input available. Skipping iCloud Calendar.")
+                return False
+            if not choice or choice.lower() in ("s", "skip"):
+                return False
+            if choice.lower() in ("r", "resend"):
+                send = True
+                continue
+            if consumed:
+                print("The previous trusted-device challenge ended; request a new code with r.")
+                continue
+            code = "".join(choice.split())
+            lengths = (6,) if two_factor else (4, 6)
+            if not (len(code) in lengths and code.isascii() and code.isdigit()):
+                description = "six-digit" if two_factor else "four- or six-digit"
+                print(f"Enter a {description} code, r to resend, or press Enter to skip Calendar.")
+                continue
+
+            attempts += 1
+            try:
+                if validate_code(code):
+                    return True
+                print("iCloud verification did not complete. The code may be incorrect or expired.")
+            except (PyiCloudException, RequestException) as exc:
+                # This includes PyiCloud2FARequiredException, which is not an
+                # APIResponseException and escapes pyicloud's invalid-code handler.
+                print(f"iCloud could not verify that code ({type(exc).__name__}).")
+            # pyicloud 2.6.5 closes the trusted-device bridge after each attempt;
+            # another device-code attempt requires an explicitly requested code.
+            consumed = delivery == "trusted_device"
+            if attempts < 3:
+                print(f"{3 - attempts} verification attempts remain. You can also skip Calendar.")
+
+        print("Verification attempt limit reached. Skipping iCloud Calendar for this run.")
+        return False
 
     # --------------------------
     # Safe calendar lookups

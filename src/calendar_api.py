@@ -3,7 +3,9 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 import datetime
 
-from icloud_service import ICloudService
+from icloud_service import ICloudService, ICloudAuthenticationError
+from pyicloud.exceptions import PyiCloudException
+from requests.exceptions import RequestException
 
 
 class CalendarBackend(ABC):
@@ -92,7 +94,30 @@ class ICloudCalendar(CalendarBackend):
 
     def __init__(self, icloud_service: Optional[ICloudService] = None):
         # Either use a provided service or create one on the fly
-        self.service = icloud_service or ICloudService()
+        self.service = None
+        self.unavailable_reason = None
+        try:
+            self.service = icloud_service if icloud_service is not None else ICloudService()
+        except ICloudAuthenticationError as exc:
+            self.unavailable_reason = str(exc)
+        except (PyiCloudException, RequestException) as exc:
+            self.unavailable_reason = (
+                f"Sign-in failed ({type(exc).__name__}). Check iCloud access and restart HAL to try again."
+            )
+        if self.unavailable_reason:
+            print(f"iCloud Calendar unavailable: {self.unavailable_reason}")
+            print("HAL will continue without calendar access.")
+
+    def dispatch(self, command: str, params: Optional[list] = None):
+        if self.service is None:
+            return {"error": f"iCloud Calendar is unavailable. {self.unavailable_reason} No calendar data was retrieved."}
+        try:
+            return super().dispatch(command, params)
+        except (PyiCloudException, RequestException) as exc:
+            return {"error": (
+                f"iCloud Calendar could not be accessed ({type(exc).__name__}). "
+                "Check the connection and restart HAL if sign-in is required. No calendar data was retrieved."
+            )}
 
     def events_this_week(self, calendar: Optional[str] = None) -> List[dict]:
         return self.service.events_this_week(calendar)
@@ -172,4 +197,3 @@ if __name__ == "__main__":
                     print(e)
                 else:
                     print(f"- {e['title']} on {e['start']}")
-

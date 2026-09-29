@@ -356,6 +356,8 @@ def handle_api_call(api_type, params, user_input):
         elif api_type.startswith("calendar"):
             subcommand = api_type # for calendar requests, the api_type is also the command: e.g. calendar_search
             response = calendar_backend.dispatch(subcommand,params)
+            if isinstance(response, dict) and "error" in response:
+                return json.dumps(response)
 
             # push a calendar overlay to the display
             # suppose `response` is a list of event dicts from your calendar backend

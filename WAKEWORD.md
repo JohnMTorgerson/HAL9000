@@ -63,6 +63,25 @@ entries are no longer used by the main voice input path; they do not need to
 be removed to run the update. `src/hal-press_space_to_record.py` is an older,
 separate script and is not changed by this integration.
 
+## iCloud authentication
+
+iCloud verification identifies the active delivery method. If it says SMS, use
+the text-message code; device pop-up codes belong to a different verification
+route. Apple/pyicloud may still notify multiple trusted devices or fall back to
+SMS. HAL makes one initial code request and requests another only when you enter
+`r`. It does not choose which individual Apple device receives a prompt.
+
+A rejected code or verification exception allows another attempt, up to three
+submissions. In pyicloud 2.6.5 a trusted-device attempt closes its verification
+session, so HAL asks you to enter `r` for a fresh code before trying that route
+again. Resends are also limited to three code requests per run.
+
+Press Enter or enter `s` at the code prompt to skip iCloud Calendar and continue
+using HAL. Exhausted attempts, unavailable input, and sign-in/network failures
+also leave the calendar unavailable for that run without stopping HAL. Calendar
+requests then report unavailability instead of an empty schedule. Restart HAL
+to sign in again. The existing `accept_terms=True` setting is retained.
+
 ## OpenAI API errors
 
 Wake detection and local query transcription do not use OpenAI API credits.
@@ -202,6 +221,7 @@ spacebar priority during slow inference. Run them with:
 ```bash
 python -m unittest discover -s tests -p test_voice_input.py -v
 python -m unittest discover -s tests -p test_hal_recovery.py -v
+python -m unittest discover -s tests -p test_icloud_auth.py -v
 ```
 
 Additional tests cover physical-microphone preference, explicit input overrides,
