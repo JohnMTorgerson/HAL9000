@@ -15,6 +15,7 @@ from pydub.effects import normalize, compress_dynamic_range
 import io
 from llm_client import LLMClient
 from whisper_stt import WhisperSTT
+from voice_input import VoiceInput, CommandTooLongError
 from weather_api import fetch_current_weather, fetch_weather_forecast
 from wolfram_api import fetch_wolfram_answer
 from news_api import fetch_top_headlines, fetch_articles_by_keyword
@@ -24,35 +25,18 @@ from sports_api import SportsRouter
 sports_backend = SportsRouter()
 from maps_api import MapsRouter
 maps_backend = MapsRouter()
-import pvporcupine
 import logging
 from display_log_handler import DisplayPushHandler
-from collections import deque
-from pynput import keyboard
-import threading
-import queue
 import platform
 from led_manager import get_led
 import json
 import re
 import shlex
-import select  # for polling multiple evdev devices
 from helper_funcs import looks_factual, extract_named_entities, strip_name_at_sentence_end
 from display.server_lifecycle import DisplayServerManager
 from display_client import DisplayClient
 display = DisplayClient(os.getenv("DISPLAY_SERVER_URL", "http://127.0.0.1:8000"))
 
-
-# ---- Optional Linux key event backend (evdev) for reliable headless Spacebar handling ----
-try:
-    from evdev import InputDevice, ecodes, list_devices
-    _EVDEV_AVAILABLE = True
-except Exception:
-    _EVDEV_AVAILABLE = False
-    InputDevice = None
-    ecodes = None
-    def list_devices():
-        return []
 
 SYSTEM = platform.system()
 # ------------------ macOS Quartz fix for pynput ------------------ #
@@ -128,31 +112,11 @@ USER = os.getenv("HAL_USER_NAME", "Dave").capitalize() # Default to "Dave" if HA
 # ------------------------------------------------------------
 # Recording/Playback Configuration
 # ------------------------------------------------------------
-RATE = 16000 # must be 16000 for porcupine
-CHUNK_SIZE = 1024
-PREBUFFER_DURATION = 0.8  # seconds of audio to keep before trigger
-SILENCE_DURATION = 0.8 # seconds of silence to wait before stopping recording
-SILENCE_THRESHOLD = float(os.getenv("SILENCE_THRESHOLD")) # loudness below which to start silence counter (e.g. 0.001)
+RATE = 16000 # query audio sample rate
 COMPRESSION_THRESHOLD = float(os.getenv("COMPRESSION_THRESHOLD",0)) # amount to compress audio before playing back
 HI_PASS_FREQ = int(os.getenv("HI_PASS_FREQ",0))
 # if PLATFORM == "pi":
 #     sd.default.device = "pulse"
-
-# ------------------------------------------------------------
-# Shared State for recording
-# ------------------------------------------------------------
-audio_queue = queue.Queue()
-trigger_event = threading.Event()
-trigger_type = {"value": None}
-prebuffer = queue.deque(maxlen=int(PREBUFFER_DURATION * RATE / CHUNK_SIZE)) # ring buffer for prebuffering wake-word audio
-
-# ------------------------------------------------------------
-# Porcupine Wake Word Configuration
-# ------------------------------------------------------------
-ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY")
-KEYWORDS = ["computer"]
-KEYWORD_PATHS = os.getenv("KEYWORD_FILE_PATH")
-porcupine = pvporcupine.create(access_key=ACCESS_KEY, keyword_paths=[KEYWORD_PATHS])
 
 # ------------------------------------------------------------
 # Load HAL voice 
@@ -164,6 +128,8 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # Load Whisper – speech to text model
 # ------------------------------------------------------------
 stt = WhisperSTT()
+# The detector is local and lightweight; query transcription still uses stt above.
+voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_device("input")[0])
 
 # ------------------------------------------------------------
 # LLM Configuration
@@ -206,31 +172,14 @@ def run():
 
     while True:
         try:
-            # wait for trigger – either wake word or spacebar press
-            trigger, stream, prebuffered_audio = wait_for_trigger()
-            logger.info("====================================================================")
+            # Capture continues while the wake detector processes its rolling window.
+            # read_command closes the microphone before HAL transcribes or speaks.
+            def on_trigger(kind):
+                logger.info("====================================================================")
+                logger.info("Detected %s command: lighting LED", kind)
+                led.on()
 
-            # if on raspberry pi, light LED
-            logger.info("Detected command: lighting LED")
-            led.on()
-
-            # if spacebar, record until spacebar is released
-            if trigger == "spacebar":
-                logger.info("Push-to-talk (Spacebar hold) triggered.")
-                audio, fs = record_while_spacebar_held(stream)
-            # if wake word, record until silence threshold is met
-            elif trigger == "wakeword":
-                logger.info("Wake word triggered.")
-                audio, fs = record_until_silence(stream, initial_audio=prebuffered_audio)
-            # if neither, close stream and restart loop
-            else:
-                stream.stop()
-                stream.close()
-                continue
-
-            # close stream after recording is finished
-            stream.stop()
-            stream.close()
+            audio, fs = voice_input.read_command(on_trigger=on_trigger)
 
             # normalize recorded audio
             audio = normalize_audio(audio)
@@ -307,9 +256,14 @@ def run():
             logger.info("Turning LED off")
             led.off()
 
+        except CommandTooLongError as exc:
+            logger.warning("%s", exc)
+            logger.display("That request was too long. Please try a shorter request.")
+            led.off()
+            continue
+
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
-            porcupine.delete()
             display_mgr.stop()
             led.off()
             sys.exit(0)
@@ -651,364 +605,6 @@ def get_default_device(kind="input"):
             return None, 44100
 
 
-
-# ------------------------------------------------------------
-# Record until silence (used with wake word detection)
-# ------------------------------------------------------------
-def record_until_silence(stream, initial_audio=None, silence_threshold=SILENCE_THRESHOLD,
-                         silence_duration=SILENCE_DURATION, fs=RATE, max_duration=12.0):
-    """
-    Records audio until a period of silence is detected or max_duration is reached.
-    Handles arbitrary device sample rates correctly.
-    - initial_audio: numpy array of prebuffered audio (optional)
-    - silence_threshold: RMS below which is considered silence
-    - silence_duration: seconds of consecutive silence to stop recording
-    - fs: target sample rate (default 16000)
-    - max_duration: hard stop in seconds
-    """
-    recording = []
-
-    # Include prebuffer if provided
-    if initial_audio is not None:
-        logger.debug(f"Initial prebuffer length: {len(initial_audio)} samples (~{len(initial_audio)/fs:.2f} sec)")
-        recording.append(initial_audio.astype("float32"))
-
-    # Determine device sample rate from stream
-    device_fs = int(stream.samplerate)
-    chunk_size = CHUNK_SIZE
-
-    # Compute how many consecutive chunks equal desired silence duration
-    chunk_duration_sec = chunk_size / fs
-    max_silence_chunks = int(silence_duration / chunk_duration_sec)
-
-    # Maximum chunks to prevent infinite recording
-    max_chunks = int(max_duration / chunk_duration_sec)
-    chunks_recorded = 0
-    silence_counter = 0
-
-    logger.info("Recording command (silence detection)...")
-    start_time = time.time()
-
-    while chunks_recorded < max_chunks:
-        # Read a chunk from stream
-        chunk, _ = stream.read(chunk_size)
-        chunk = chunk.flatten().astype(np.float32) / 32768.0
-
-        # Resample if device_fs != fs
-        if device_fs != fs:
-            chunk = np.interp(
-                np.linspace(0, len(chunk), int(len(chunk) * fs / device_fs)),
-                np.arange(len(chunk)),
-                chunk
-            ).astype(np.float32)
-
-        recording.append(chunk)
-        chunks_recorded += 1
-
-        rms = np.sqrt(np.mean(chunk**2))
-        if rms < silence_threshold:
-            silence_counter += 1
-        else:
-            silence_counter = 0
-
-        if DEBUG_ON:
-            logger.debug(f"Chunk {chunks_recorded}: RMS={rms:.6f}, silence_counter={silence_counter}")
-
-        if silence_counter >= max_silence_chunks:
-            if DEBUG_ON:
-               logger.debug(f"Silence threshold reached after {chunks_recorded} chunks.")
-            break
-
-    duration = time.time() - start_time
-    audio = np.concatenate(recording)
-    logger.info(f"Recording complete. Total duration: {len(audio)/fs:.2f} sec (loop time {duration:.2f} sec)")
-
-    return audio, fs
-
-
-# ------------------------------------------------------------
-# Record while spacebar is held  (Linux uses evdev; others use pynput)
-# ------------------------------------------------------------
-def record_while_spacebar_held(stream, fs=RATE):
-    """
-    Records audio while the spacebar is held down.
-    Stops immediately when the spacebar is released.
-    """
-    recording = []
-    stop_event = threading.Event()
-    device_fs = int(stream.samplerate)
-
-    # Start a platform-aware release listener (evdev on Linux; pynput elsewhere)
-    _start_spacebar_release_listener(stop_event)
-
-    logger.info("Recording command (push-to-talk, hold spacebar)...")
-    start_time = time.time()
-    while not stop_event.is_set():
-        chunk, _ = stream.read(CHUNK_SIZE)
-        chunk = chunk.flatten().astype(np.float32) / 32768.0
-
-        # Resample to 16kHz if needed
-        if device_fs != fs:
-            chunk = np.interp(
-                np.linspace(0, len(chunk), int(len(chunk) * fs / device_fs)),
-                np.arange(len(chunk)),
-                chunk
-            ).astype(np.float32)
-
-        recording.append(chunk)
-
-    # Ensure any listener thread stops
-    stop_event.set()
-
-    duration = time.time() - start_time
-    audio = np.concatenate(recording) if recording else np.array([], dtype=np.float32)
-    logger.info(f"Recording complete (spacebar released). Total duration: {len(audio)/fs:.2f} sec (loop time {duration:.2f} sec)")
-
-    return audio, fs
-
-# ------------------------------------------------------------
-# Wait for trigger – either wake word or spacebar hold
-# ------------------------------------------------------------
-def wait_for_trigger(pre_buffer_duration=PREBUFFER_DURATION, fs=RATE):
-    """
-    Waits for either the wake word or the Spacebar key to trigger recording.
-    Returns (trigger_type, stream, buffered_audio)
-    - trigger_type: 'wakeword' or 'spacebar'
-    - stream: the active InputStream (to reuse)
-    - buffered_audio: prebuffered audio if wakeword triggered, else None
-    """
-    trigger_event = threading.Event()
-    trigger_type = {"value": None}
-    buffered_audio_container = {"audio": None}
-    input_device, device_fs = get_default_device("input")
-
-    # Start cross-platform spacebar PRESS listener (Linux uses evdev if available)
-    _start_spacebar_press_listener(trigger_event, trigger_type)
-
-    # Set up prebuffer for wake word, using 16k for the frame rate (since we'll convert to that before extending the buffer)
-    pre_buffer = deque(maxlen=int(pre_buffer_duration * fs))
-
-    logger.info("Listening for wake word or push-to-talk (hold Spacebar)...")
-    stream = sd.InputStream(samplerate=device_fs, channels=1, dtype="int16", device=input_device)
-    stream.start()
-
-    try:
-        while not trigger_event.is_set():
-            # porcupine expects 512 samples, so...
-            # How many samples at device_fs give 512 samples at 16kHz
-            device_frame_length = int(porcupine.frame_length * device_fs / fs)
-
-            # Read that many samples from the device
-            audio_frame, _ = stream.read(device_frame_length)
-            audio_frame = audio_frame.flatten()
-
-            # Now resample to exactly porcupine.frame_length
-            if device_fs != fs:
-                audio_16k = np.interp(
-                    np.linspace(0, len(audio_frame), porcupine.frame_length),
-                    np.arange(len(audio_frame)),
-                    audio_frame
-                ).astype(np.int16)
-            else:
-                audio_16k = audio_frame
-
-            # extend prebuffer with converted audio frame
-            pre_buffer.extend(audio_16k)
-
-            keyword_index = porcupine.process(audio_16k)
-            if keyword_index >= 0:
-                trigger_type["value"] = "wakeword"
-                buffered_audio_container["audio"] = np.array(pre_buffer, dtype=np.float32) / 32768.0
-                trigger_event.set()
-                break
-
-    except KeyboardInterrupt:
-        stream.stop()
-        stream.close()
-        raise
-
-    return trigger_type["value"], stream, buffered_audio_container["audio"]
-
-
-# ------------------------------------------------------------
-# Platform-aware Spacebar listeners (PRESS and RELEASE)
-# ------------------------------------------------------------
-def _start_spacebar_press_listener(trigger_event: threading.Event, trigger_type_dict: dict):
-    """
-    Sets trigger_event when Spacebar is PRESSED (keydown).
-    On Linux: prefer evdev. Else: fall back to pynput.
-    """
-    system = platform.system()
-    if system == "Linux" and _EVDEV_AVAILABLE:
-        t = threading.Thread(target=_evdev_press_worker, args=(trigger_event, trigger_type_dict), daemon=True)
-        t.start()
-        return
-    _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
-
-def _start_spacebar_release_listener(stop_event: threading.Event):
-    """
-    Sets stop_event when Spacebar is RELEASED (keyup).
-    On Linux: prefer evdev. Else: fall back to pynput.
-    """
-    system = platform.system()
-    if system == "Linux" and _EVDEV_AVAILABLE:
-        t = threading.Thread(target=_evdev_release_worker, args=(stop_event,), daemon=True)
-        t.start()
-        return
-    _start_pynput_spacebar_release_listener(stop_event)
-
-def _start_pynput_spacebar_press_listener(trigger_event: threading.Event, trigger_type_dict: dict):
-    def _on_press(key):
-        try:
-            if key == keyboard.Key.space:
-                trigger_type_dict["value"] = "spacebar"
-                trigger_event.set()
-                return False
-        except Exception as e:
-            logger.error(f"Spacebar press listener (pynput) error: {e}")
-    try:
-        listener = keyboard.Listener(on_press=_on_press)
-        listener.daemon = True
-        listener.start()
-    except Exception as e:
-        logger.error(f"Failed to start pynput press listener: {e}")
-
-def _start_pynput_spacebar_release_listener(stop_event: threading.Event):
-    def _on_release(key):
-        try:
-            if key == keyboard.Key.space:
-                stop_event.set()
-                return False
-        except Exception as e:
-            logger.error(f"Spacebar release listener (pynput) error: {e}")
-    try:
-        listener = keyboard.Listener(on_release=_on_release)
-        listener.daemon = True
-        listener.start()
-    except Exception as e:
-        logger.error(f"Failed to start pynput release listener: {e}")
-
-def _evdev_keyboard_device_paths():
-    """
-    Return a list of candidate keyboard event device paths.
-    """
-    paths = []
-    for p in list_devices():
-        try:
-            dev = InputDevice(p)
-            caps = dev.capabilities().get(ecodes.EV_KEY, [])
-            if isinstance(caps, dict):
-                keys = list(caps.keys())
-            else:
-                keys = caps
-            if ecodes.KEY_SPACE in keys:
-                # Prefer devices that look like a keyboard
-                score = 0
-                name = (dev.name or "").lower()
-                phys = (dev.phys or "").lower()
-                if "kbd" in name or "keyboard" in name or "kbd" in phys:
-                    score += 1
-                paths.append((score, p))
-        except Exception:
-            continue
-    # Sort: best candidate first
-    paths.sort(key=lambda x: (-x[0], x[1]))
-    return [p for _, p in paths]
-
-def _evdev_press_worker(trigger_event: threading.Event, trigger_type_dict: dict):
-    """
-    Watch ALL candidate keyboard devices; on KEY_SPACE down (or repeat) set trigger_event.
-    """
-    paths = _evdev_keyboard_device_paths()
-    if not paths:
-        logger.warning("evdev: no keyboard-like devices found for PRESS; falling back to pynput.")
-        _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
-        return
-    devices = []
-    fd_to_dev = {}
-    try:
-        for path in paths:
-            try:
-                d = InputDevice(path)
-                devices.append(d)
-                fd_to_dev[getattr(d, "fd", d.fileno())] = d
-                logger.debug(f"evdev PRESS watching: {path} ({d.name})")
-            except PermissionError:
-                logger.warning(f"evdev PRESS permission denied: {path}")
-            except Exception as e:
-                logger.warning(f"evdev PRESS open failed for {path}: {e}")
-        if not devices:
-            _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
-            return
-        poller = select.poll()
-        for d in devices:
-            poller.register(getattr(d, "fd", d.fileno()), select.POLLIN)
-        while not trigger_event.is_set():
-            events = poller.poll(500)  # 0.5s timeout to allow graceful exit
-            for fd, _ in events:
-                dev = fd_to_dev.get(fd)
-                if not dev:
-                    continue
-                try:
-                    for ev in dev.read():
-                        if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value in (1, 2):
-                            logger.debug("evdev: SPACE down detected.")
-                            trigger_type_dict["value"] = "spacebar"
-                            trigger_event.set()
-                            return
-                except (BlockingIOError, OSError):
-                    # No events to read despite poll (driver timing); safe to continue
-                    pass
-    except Exception as e:
-        logger.warning(f"evdev press listener encountered an error; falling back to pynput: {e}")
-        _start_pynput_spacebar_press_listener(trigger_event, trigger_type_dict)
-
-def _evdev_release_worker(stop_event: threading.Event):
-    """
-    Watch ALL candidate keyboard devices; on KEY_SPACE up set stop_event.
-    """
-    paths = _evdev_keyboard_device_paths()
-    if not paths:
-        logger.warning("evdev: no keyboard-like devices found for RELEASE; falling back to pynput.")
-        _start_pynput_spacebar_release_listener(stop_event)
-        return
-    devices = []
-    fd_to_dev = {}
-    try:
-        for path in paths:
-            try:
-                d = InputDevice(path)
-                devices.append(d)
-                fd_to_dev[getattr(d, "fd", d.fileno())] = d
-                logger.debug(f"evdev RELEASE watching: {path} ({d.name})")
-            except PermissionError:
-                logger.warning(f"evdev RELEASE permission denied: {path}")
-            except Exception as e:
-                logger.warning(f"evdev RELEASE open failed for {path}: {e}")
-        if not devices:
-            _start_pynput_spacebar_release_listener(stop_event)
-            return
-        poller = select.poll()
-        for d in devices:
-            poller.register(getattr(d, "fd", d.fileno()), select.POLLIN)
-        while not stop_event.is_set():
-            events = poller.poll(500)
-            for fd, _ in events:
-                dev = fd_to_dev.get(fd)
-                if not dev:
-                    continue
-                try:
-                    for ev in dev.read():
-                        if ev.type == ecodes.EV_KEY and ev.code == ecodes.KEY_SPACE and ev.value == 0:
-                            logger.debug("evdev: SPACE up detected.")
-                            stop_event.set()
-                            return
-                except (BlockingIOError, OSError):
-                    # No events available – harmless
-                    pass
-    except Exception as e:
-        logger.warning(f"evdev release listener encountered an error; falling back to pynput: {e}")
-        _start_pynput_spacebar_release_listener(stop_event)
 
 # ------------------------------------------------------------
 # Entry Point
