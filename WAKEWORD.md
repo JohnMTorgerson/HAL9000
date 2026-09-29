@@ -162,8 +162,18 @@ completion, interruption, or error.
 Commands have a 25-second limit, including buffered history, within the
 existing local transcriber's 30-second audio limit. An overlong request is
 discarded with a message so a partial instruction is not sent to the LLM.
-Input overflow or loss of required audio is reported as an error rather than
-silently transcribing a damaged command.
+On microphone input overflow, HAL discards the entire capture, turns off the
+LED, reports that the request needs repeating, and reopens the microphone after
+a short pause. The display server stays running. Damaged audio is never sent
+for transcription. Other unexpected capture failures still surface as errors.
+
+The input stream requests 0.25 seconds of buffering headroom instead of the
+device's low-latency setting. This gives the reader more tolerance for scheduling
+delays under CPU load; the reader still drains audio in short blocks. The actual
+latency selected by the audio driver is logged when listening starts. If the Pi
+continues to overflow, try `HAL_INPUT_LATENCY_SECONDS=0.5` in `.env` and restart.
+More buffering can add input latency and does not guarantee that an overloaded
+device will keep up.
 
 If the wake model or its dependencies are unavailable, startup logs the
 problem and spacebar remains available. Install the wake dependencies and run
@@ -185,6 +195,7 @@ The tested defaults require no new `.env` entries. Available settings:
 | `WAKE_ENABLED` | `true` | Enable local wake detection |
 | `WAKE_MODELS` | `base.en` | `base.en`, `tiny.en`, or both separated by spaces/commas |
 | `WAKE_THREADS` | `2` | Wake model CPU threads |
+| `HAL_INPUT_LATENCY_SECONDS` | `0.25` | Requested input buffering headroom, 0.02–2 seconds |
 | `WAKE_WINDOW_SECONDS` | `3` | Length of each rolling window |
 | `WAKE_HOP_SECONDS` | `0.75` | Minimum interval between scan endpoints |
 | `WAKE_SILENCE_SECONDS` | `1.2` | Silence before ending a detected request |
@@ -214,7 +225,7 @@ seconds. This short session does not establish long-term reliability.
 
 The integrated detector also matched all 13 saved trigger windows in Linux
 replay. Hardware-free checks cover buffer wrapping and loss detection,
-resampling, phrase boundaries, overflow reporting, graceful reader shutdown,
+resampling, phrase boundaries, overflow discard/recovery, graceful reader shutdown,
 press/release capture, missing-model fallback, full utterance buffering, and
 spacebar priority during slow inference. Run them with:
 

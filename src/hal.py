@@ -17,6 +17,7 @@ from llm_client import LLMClient, LLMServiceError
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from voice_input import VoiceInput, CommandTooLongError
+from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
 from wolfram_api import fetch_wolfram_answer
 from news_api import fetch_top_headlines, fetch_articles_by_keyword
@@ -259,6 +260,12 @@ def run():
             logger.info("Turning LED off")
             led.off()
 
+        except AudioOverflowError as exc:
+            led.off()
+            logger.warning('%s Reopening microphone.', exc)
+            logger.display('HAL: Microphone audio was lost. Please repeat your request when listening resumes.')
+            time.sleep(.5)
+            continue
         except CommandTooLongError as exc:
             logger.warning("%s", exc)
             logger.display("That request was too long. Please try a shorter request.")

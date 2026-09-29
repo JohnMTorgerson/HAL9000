@@ -16,6 +16,7 @@ from openai import OpenAI
 SRC = Path(__file__).resolve().parents[1] / 'src'
 sys.path.insert(0, str(SRC))
 from audio_devices import choose_input_device
+from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
 
 
@@ -164,13 +165,14 @@ class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
             'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager',
-            'play_audio', 'handle_api_call')}
+            'play_audio', 'handle_api_call', 'time')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
             'sys': sys, 're': re, 'shlex': shlex, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
             'normalize_audio': lambda audio: audio,
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,
+            'AudioOverflowError': AudioOverflowError,
         })
         namespace['stt'].transcribe.return_value = 'Hey HAL, are you there?'
         namespace['handle_api_call'].return_value = 'service result'
@@ -209,6 +211,28 @@ class MainLoopTests(unittest.TestCase):
             run()
         ns['DisplayServerManager'].return_value.stop.assert_called_once()
         ns['led'].off.assert_called_once()
+
+    def test_repeated_input_overflows_keep_display_up_and_never_transcribe(self):
+        ns, run = self.fixture()
+        display_mgr = ns['DisplayServerManager'].return_value
+        reads = []
+        def read_command(on_trigger):
+            reads.append(True)
+            display_mgr.stop.assert_not_called()
+            if len(reads) <= 2:
+                on_trigger('wakeword')
+                raise AudioOverflowError('input overflow')
+            self.assertEqual(ns['led'].off.call_count, 2)
+            self.assertEqual(ns['time'].sleep.call_count, 2)
+            ns['stt'].transcribe.assert_not_called()
+            ns['llm'].get_response.assert_not_called()
+            raise KeyboardInterrupt
+        ns['voice_input'].read_command.side_effect = read_command
+        with self.assertRaises(SystemExit) as stopped:
+            run()
+        self.assertEqual(stopped.exception.code, 0)
+        self.assertEqual(len(reads), 3)
+        display_mgr.stop.assert_called_once()
 
 
 if __name__ == '__main__':

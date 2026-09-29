@@ -23,6 +23,7 @@ class VoiceSettings:
     channel: int = 1
     max_gain_db: float = 24.
     normalization: str = 'capped'
+    input_latency: float = .25
 
     def __post_init__(self):
         if not (.25 <= self.hop <= self.window <= 6):
@@ -33,6 +34,8 @@ class VoiceSettings:
             raise ValueError('Invalid wake thread, microphone channel, or gain setting.')
         if self.normalization not in ('capped', 'peak'):
             raise ValueError('WAKE_NORMALIZATION must be capped or peak.')
+        if not (.02 <= self.input_latency <= 2):
+            raise ValueError('Use HAL_INPUT_LATENCY_SECONDS 0.02–2.')
 
     @classmethod
     def from_env(cls):
@@ -44,7 +47,8 @@ class VoiceSettings:
                    threads=int(os.getenv('WAKE_THREADS', 2)),
                    channel=int(os.getenv('HAL_INPUT_CHANNEL', 1)),
                    max_gain_db=float(os.getenv('WAKE_MAX_GAIN_DB', 24)),
-                   normalization=os.getenv('WAKE_NORMALIZATION', 'capped'))
+                   normalization=os.getenv('WAKE_NORMALIZATION', 'capped'),
+                   input_latency=float(os.getenv('HAL_INPUT_LATENCY_SECONDS', .25)))
 
 class VoiceInput:
     def __init__(self, settings, logger, detector=None, device_selector=lambda: None,
@@ -81,7 +85,8 @@ class VoiceInput:
             device = int(device) if device.isdigit() else device
         else:
             device = self.device_selector()
-        capture = self.capture_factory(device=device, channel=settings.channel)
+        capture = self.capture_factory(device=device, channel=settings.channel,
+                                       latency=settings.input_latency)
         keys = self.keyboard_factory(self.logger)
         try:
             capture.start()
@@ -98,6 +103,8 @@ class VoiceInput:
             last_endpoint = 0
             self.logger.info('Listening on %s (%s Hz) for %s.', capture.device_name, rate,
                              'Hey HAL or spacebar' if self.detector else 'spacebar')
+            self.logger.info('Microphone input latency: %.3fs (requested %.3fs).',
+                             getattr(capture, 'latency', settings.input_latency), settings.input_latency)
             while True:
                 capture.check()
                 total, _ = history.position()
@@ -150,6 +157,8 @@ class VoiceInput:
                 if len(audio) < round(settings.window * RATE):
                     audio = np.pad(audio, (round(settings.window * RATE) - len(audio), 0))
                 decision = self.detector.analyze(audio)
+                # Reject a result if capture lost samples while inference ran.
+                capture.check()
                 # Spacebar has priority even if pressed during this inference.
                 if keys.snapshot()[0] is not None:
                     continue

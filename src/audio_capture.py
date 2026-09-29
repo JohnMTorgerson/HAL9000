@@ -7,6 +7,10 @@ from scipy.signal import resample_poly
 
 RATE = 16000
 
+class AudioOverflowError(RuntimeError):
+    """Input samples were lost; discard this capture and reopen the microphone."""
+
+
 class AudioHistory:
     def __init__(self, rate, seconds=60):
         self.rate = int(rate)
@@ -61,7 +65,8 @@ def to_audio(samples, rate):
 
 
 class MicrophoneCapture:
-    def __init__(self, device=None, channel=1, stream_factory=None, device_info=None):
+    def __init__(self, device=None, channel=1, stream_factory=None, device_info=None,
+                 latency=.25):
         if stream_factory is None or device_info is None:
             import sounddevice as sd
             stream_factory = stream_factory or sd.InputStream
@@ -77,7 +82,8 @@ class MicrophoneCapture:
         self.error = None
         self.opened_at = None
         self.stream = stream_factory(device=device, samplerate=self.rate, channels=channel,
-                                     dtype='int16', latency='low')
+                                     dtype='int16', latency=latency)
+        self.latency = getattr(self.stream, 'latency', latency)
 
     def start(self):
         self.stream.start()
@@ -90,15 +96,15 @@ class MicrophoneCapture:
             while not self.stop_event.is_set():
                 data, overflow = self.stream.read(max(1, round(.02 * self.rate)))
                 if overflow:
-                    raise RuntimeError('Microphone input overflow: audio was lost; command discarded.')
+                    raise AudioOverflowError('Microphone input overflow: audio was lost; command discarded.')
                 self.history.append(data[:, self.channel - 1].copy())
         except Exception as exc:
             if not self.stop_event.is_set():
-                self.error = f'{type(exc).__name__}: {exc}'
+                self.error = exc
 
     def check(self):
         if self.error:
-            raise RuntimeError(self.error)
+            raise self.error
         if self.thread is not None and not self.thread.is_alive():
             raise RuntimeError('Microphone reader stopped unexpectedly.')
         _, last = self.history.position()

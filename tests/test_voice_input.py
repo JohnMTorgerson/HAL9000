@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from audio_capture import AudioHistory, MicrophoneCapture, to_audio
+from audio_capture import AudioHistory, AudioOverflowError, MicrophoneCapture, to_audio
 from spacebar_trigger import SpacebarTrigger
 from voice_input import VoiceInput, VoiceSettings, CommandTooLongError
 from wake_detector import matches_wake
@@ -75,26 +75,34 @@ class CaptureTests(unittest.TestCase):
         self.assertFalse(capture.thread.is_alive())
 
     def test_reader_reports_overflow(self):
+        options = {}
+        calls = []
         class Stream:
             def __init__(self, **kwargs):
-                pass
+                options.update(kwargs)
+                self.latency = .3
             def start(self):
                 pass
             def read(self, frames):
                 return np.zeros((frames, 1), dtype=np.int16), True
             def stop(self):
-                pass
+                calls.append('stop')
             def close(self):
-                pass
+                calls.append('close')
         capture = MicrophoneCapture(stream_factory=Stream,
             device_info={'name': 'fixture', 'default_samplerate': 16000, 'max_input_channels': 1})
         try:
             capture.start()
             capture.thread.join(timeout=1)
-            with self.assertRaisesRegex(RuntimeError, 'overflow'):
+            with self.assertRaisesRegex(AudioOverflowError, 'overflow'):
                 capture.check()
+            self.assertEqual(capture.history.position()[0], 0)
+            self.assertEqual(options['latency'], .25)
+            self.assertEqual(capture.latency, .3)
         finally:
             capture.close()
+        self.assertEqual(calls, ['stop', 'close'])
+        self.assertFalse(capture.thread.is_alive())
 
     def test_resample_preserves_duration_and_finite_audio(self):
         x = np.full(48000, 1234, dtype=np.int16)
@@ -191,6 +199,40 @@ class FlowTests(unittest.TestCase):
         np.testing.assert_array_equal(audio[:16000], signal[:16000].astype(np.float32) / 32768)
         self.assertTrue(state['capture_during_decode'])
         self.assertTrue(state['closed'] and state['keys_closed'])
+
+    def test_overflow_during_decode_discards_match_and_next_capture_succeeds(self):
+        clock, _, state, voice = self.fixture()
+        original_analyze = voice.detector.analyze
+        failed_captures = []
+        def analyze_with_loss(audio):
+            result = original_analyze(audio)
+            failed_captures.append(clock.capture)
+            clock.capture.check = Mock(side_effect=AudioOverflowError('input overflow'))
+            return result
+        voice.detector.analyze = analyze_with_loss
+        triggered = []
+        with patch('voice_input.time', clock):
+            with self.assertRaises(AudioOverflowError):
+                voice.read_command(triggered.append)
+            self.assertEqual(triggered, [])
+            self.assertTrue(state['closed'] and state['keys_closed'])
+            voice.detector.analyze = original_analyze
+            audio, rate = voice.read_command(triggered.append)
+        self.assertIsNot(clock.capture, failed_captures[0])
+        self.assertEqual(triggered, ['wakeword'])
+        self.assertGreater(len(audio), 0)
+        self.assertEqual(rate, 16000)
+
+    def test_input_latency_configuration_reaches_stream_and_rejects_invalid_values(self):
+        clock, _, state, voice = self.fixture('spacebar')
+        with patch.dict('os.environ', {'HAL_INPUT_LATENCY_SECONDS': '0.5'}):
+            voice.settings = VoiceSettings.from_env()
+        with patch('voice_input.time', clock):
+            voice.read_command()
+        self.assertEqual(state['capture_options']['latency'], .5)
+        for latency in (0, -.1, 2.1, float('nan'), float('inf')):
+            with self.subTest(latency=latency), self.assertRaisesRegex(ValueError, 'HAL_INPUT_LATENCY_SECONDS'):
+                VoiceSettings(input_latency=latency)
 
     def test_short_spacebar_press_during_decode_has_priority_and_finishes(self):
         clock, signal, state, voice = self.fixture('spacebar')
