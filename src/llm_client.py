@@ -78,6 +78,11 @@ class LLMClient:
         if self.backend == "openai":
             system_message = get_hal_system_message()
             messages = [system_message] + history
+            options = {}
+            if self.model_name == 'gpt-6-luna':
+                # Preserve HAL's quick, non-reasoning replies and small output
+                # budget. Luna's default medium reasoning rejects temperature.
+                options['reasoning_effort'] = 'none'
 
             try:
                 response = self.client.chat.completions.create(
@@ -85,6 +90,7 @@ class LLMClient:
                     messages=messages,
                     max_completion_tokens=512,
                     temperature=1,
+                    **options,
                 )
             except OPENAI_ERRORS as exc:
                 raise _openai_service_error(exc) from exc

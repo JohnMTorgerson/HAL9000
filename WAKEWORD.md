@@ -78,6 +78,40 @@ Each LLM request makes one API attempt, with no automatic retries. After fixing 
 billing or connection problem, ask again; an API key change needs a restart.
 No microphone or model reinstall is needed for a billing error.
 
+## Choosing the OpenAI language model
+
+To use GPT-6 Luna, set the following in the existing `.env` and restart HAL:
+
+```dotenv
+LLM_BACKEND=openai
+LLM_MODEL=gpt-6-luna
+```
+
+HAL sends `reasoning_effort="none"` for this model to preserve quick replies,
+the current 512-token output budget, and compatibility with `temperature=1`.
+See the [Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna)
+and [GPT-6 migration guidance](https://developers.openai.com/api/docs/guides/latest-model).
+Use an account with access to the model and available API credits.
+
+To list model IDs returned by the API for HAL's key, run this from `src` in the
+same Python environment used for HAL. It searches for `.env` from the current
+directory upward and prints model IDs without displaying the key:
+
+```bash
+python - <<'PY'
+from dotenv import find_dotenv, load_dotenv
+from openai import OpenAI
+
+load_dotenv(find_dotenv(usecwd=True))
+with OpenAI() as client:
+    for model in sorted(client.models.list(), key=lambda model: model.id):
+        print(model.id)
+PY
+```
+
+The list includes models for other tasks, such as audio and embeddings; model
+presence alone does not establish Chat Completions compatibility or pricing.
+
 ## Behavior
 
 Default detection uses base.en on CPU with INT8, a three-second rolling
