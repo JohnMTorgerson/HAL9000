@@ -13,7 +13,8 @@ from piper import PiperVoice, SynthesisConfig
 from pydub import AudioSegment
 from pydub.effects import normalize, compress_dynamic_range
 import io
-from llm_client import LLMClient
+from llm_client import LLMClient, LLMServiceError
+from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from voice_input import VoiceInput, CommandTooLongError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -260,6 +261,13 @@ def run():
             logger.warning("%s", exc)
             logger.display("That request was too long. Please try a shorter request.")
             led.off()
+            continue
+
+        except LLMServiceError as exc:
+            led.off()
+            logger.error("%s", exc)
+            logger.display(f"HAL: {exc}")
+            logger.info("Returning to listening.")
             continue
 
         except KeyboardInterrupt:
@@ -578,18 +586,8 @@ def get_default_device(kind="input"):
     devices = sd.query_devices()
 
     if kind == "input":
-        if SYSTEM == "Linux":
-            # pick USB mic if available
-            for i, dev in enumerate(devices):
-                if dev['max_input_channels'] > 0 and ("Microphone" in dev['name'] or "USB" in dev['name']):
-                    return i, int(dev['default_samplerate'])
-            # fallback: first input device
-            for i, dev in enumerate(devices):
-                if dev['max_input_channels'] > 0:
-                    return i, int(dev['default_samplerate'])
-        else:
-            # macOS/Windows: use default device
-            return None, RATE
+        device = choose_input_device(devices, sd.default.device[0])
+        return device, int(devices[device]['default_samplerate'])
     else:  # output
         if SYSTEM == "Linux":
             # pick USB speaker if available

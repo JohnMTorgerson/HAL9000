@@ -35,16 +35,24 @@ use a 64-bit OS for the ARM wheels. This is an incremental dependency install,
 not a request to recreate the full HAL environment. If PortAudio is missing
 on Linux, install the distribution's `libportaudio2` package.
 
-On the Mac, the default input is the system microphone, as before. On Linux,
-HAL's existing USB-microphone selection is retained. The selected name and
-sample rate appear in the log. To select the FIFINE explicitly, add:
+Automatic input selection prefers FIFINE, then USB microphones, then a
+nonvirtual system default or another available input. Names associated with
+virtual inputs (including Virtual Desktop Mic, BlackHole, Loopback and
+aggregate devices) are skipped. This is a name-based heuristic: pin the
+microphone explicitly for a predictable choice. The selected name and sample
+rate appear in the log. To select the FIFINE, add to your existing `.env`:
 
 ```dotenv
 HAL_INPUT_DEVICE="fifine Microphone"
 HAL_INPUT_CHANNEL=1
 ```
 
-A device number is also accepted. List devices with:
+A device number is also accepted, but names remain useful when device numbers
+change after reconnecting hardware. An explicit setting always takes priority,
+including when intentionally selecting a virtual input. A missing or ambiguous
+explicit device reports an error rather than choosing another microphone.
+If automatic selection finds only virtual inputs, it asks for an explicit
+choice. List devices with:
 
 ```bash
 python -m sounddevice
@@ -54,6 +62,21 @@ Existing `PICOVOICE_ACCESS_KEY`, `KEYWORD_FILE_PATH`, and `SILENCE_THRESHOLD`
 entries are no longer used by the main voice input path; they do not need to
 be removed to run the update. `src/hal-press_space_to_record.py` is an older,
 separate script and is not changed by this integration.
+
+## OpenAI API errors
+
+Wake detection and local query transcription do not use OpenAI API credits.
+When `LLM_BACKEND=openai`, the language model still requires API access.
+`credit_balance_exhausted` means credits must be added at
+https://platform.openai.com/settings/organization/billing/. Retrying does not
+restore an exhausted balance. `insufficient_quota` can also indicate an account
+limit; temporary request rate limits have a different recovery message.
+
+HAL reports service errors in the console and display, turns off the LED, and
+returns to listening. Failed requests are not added to conversation history.
+Each LLM request makes one API attempt, with no automatic retries. After fixing the
+billing or connection problem, ask again; an API key change needs a restart.
+No microphone or model reinstall is needed for a billing error.
 
 ## Behavior
 
@@ -130,14 +153,20 @@ was about 0.61 seconds, and median existing query transcription about 0.59
 seconds. This short session does not establish long-term reliability.
 
 The integrated detector also matched all 13 saved trigger windows in Linux
-replay. Ten hardware-free checks cover buffer wrapping and loss detection,
+replay. Hardware-free checks cover buffer wrapping and loss detection,
 resampling, phrase boundaries, overflow reporting, graceful reader shutdown,
 press/release capture, missing-model fallback, full utterance buffering, and
 spacebar priority during slow inference. Run them with:
 
 ```bash
 python -m unittest discover -s tests -p test_voice_input.py -v
+python -m unittest discover -s tests -p test_hal_recovery.py -v
 ```
+
+Additional tests cover physical-microphone preference, explicit input overrides,
+credit exhaustion versus temporary rate limits, history preservation, and the
+actual HAL loop returning to listening after a service failure. API tests use
+the existing OpenAI SDK with a mock HTTP transport; they need no API key or credits.
 
 The new shutdown order is verified with an instrumented blocking stream;
 native Mac shutdown and full HAL operation on the Pi still need device testing.

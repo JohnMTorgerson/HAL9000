@@ -6,7 +6,7 @@ import threading
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -138,6 +138,7 @@ class FlowTests(unittest.TestCase):
         state = {'closed': False, 'keys_closed': False, 'windows': []}
         class Capture:
             def __init__(self, **kwargs):
+                state['capture_options'] = kwargs
                 self.history = AudioHistory(16000)
                 self.rate = 16000
                 self.device_name = 'fixture'
@@ -207,6 +208,16 @@ class FlowTests(unittest.TestCase):
             with self.assertRaises(CommandTooLongError):
                 voice.read_command()
         self.assertTrue(state['closed'] and state['keys_closed'])
+
+    def test_explicit_device_name_or_number_bypasses_automatic_selection(self):
+        for setting, expected in [('Virtual Desktop Mic', 'Virtual Desktop Mic'), ('0', 0)]:
+            with self.subTest(setting=setting):
+                clock, _, state, voice = self.fixture('spacebar')
+                voice.device_selector = Mock(side_effect=AssertionError('Override ignored'))
+                with patch.dict('os.environ', {'HAL_INPUT_DEVICE': setting}), patch('voice_input.time', clock):
+                    voice.read_command()
+                self.assertEqual(state['capture_options']['device'], expected)
+                voice.device_selector.assert_not_called()
 
     def test_missing_model_still_constructs_manual_input(self):
         fake = types.SimpleNamespace(WhisperWakeDetector=lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('missing')))
