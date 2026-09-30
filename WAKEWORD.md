@@ -2,13 +2,10 @@
 
 HAL now uses local faster-whisper for “Hey HAL” detection. Porcupine is no
 longer imported or initialized by `src/hal.py`; no Picovoice account is needed.
-Query transcription still uses the existing `WhisperSTT` backend and model.
-For the current setup, keep:
-
-```dotenv
-TRANSCRIPTION_BACKEND=local
-WHISPER_MODEL_NAME=base
-```
+Query transcription is configured separately. `TRANSCRIPTION_MODE=static` is
+the default: HAL finishes recording before transcribing the complete file,
+using your existing `TRANSCRIPTION_BACKEND=local` or `api` setting.
+Optional live API transcription is described below; updating HAL does not enable it.
 
 ## Update an existing HAL installation
 
@@ -168,6 +165,70 @@ PY
 The list includes models for other tasks, such as audio and embeddings; model
 presence alone does not establish Chat Completions compatibility or pricing.
 
+## Optional live query transcription
+
+Live mode sends query audio to OpenAI while the command is still being recorded.
+It connects only after a wake detection or spacebar press, first sending the
+buffered beginning of the command, then new audio as it arrives. Idle listening
+uses the local wake model and sends no audio to the transcription API.
+Only the final transcript reaches the LLM. Wake detection, Luna, and Piper keep
+their existing roles; this changes query transcription only.
+
+Install the optional transport in HAL's existing Python environment, from the
+repository root:
+
+```bash
+git pull --ff-only
+python -m pip install -r src/requirements-live.txt
+```
+
+Add or update these entries in your existing `.env`, then restart HAL:
+
+```dotenv
+TRANSCRIPTION_BACKEND=api
+TRANSCRIPTION_MODE=live
+LIVE_TRANSCRIPTION_FALLBACK=false
+```
+
+For a comparison, keep the other working settings unchanged, including
+`WAKE_MODELS=tiny.en`, `WAKE_BEAM_SIZE=5`, `WAKE_SILENCE_SECONDS=0.8`, and
+`LLM_SERVICE_TIER=fast`. To return to the previous upload workflow, set
+`TRANSCRIPTION_MODE=static` and restart. Local transcription also requires
+static mode; HAL rejects a live/local combination instead of silently enabling
+paid API use. `WHISPER_MODEL_NAME` continues to apply only to local transcription.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `TRANSCRIPTION_MODE` | `static` | Complete-recording upload/local transcription, or `live` API audio streaming |
+| `LIVE_TRANSCRIPTION_MODEL` | `gpt-live-transcribe` | Streaming transcription model; requires API project access |
+| `LIVE_TRANSCRIPTION_DELAY` | `low` | Model latency setting: `minimal`, `low`, `medium`, `high`, or `xhigh` |
+| `LIVE_TRANSCRIPTION_LANGUAGES` | `en` | Comma-separated language hints; blank omits the hint |
+| `LIVE_TRANSCRIPTION_TIMEOUT_SECONDS` | `8` | Maximum wait after recording ends for the final result, 1–60 seconds |
+| `LIVE_TRANSCRIPTION_FALLBACK` | `false` | Explicitly allow one complete-file API upload after a live failure |
+
+Both static API transcription and live transcription are billed; local static
+transcription does not use API credits. As of September 30, 2026,
+[GPT-Live-Transcribe](https://developers.openai.com/api/docs/models/gpt-live-transcribe)
+costs $0.017 per audio minute, approximately $0.0017 for six seconds. Buffered
+history and silence are part of the audio sent. A cancelled or failed turn may
+still incur charges for audio already sent. The logged committed duration is
+an audio measurement, not a billing receipt.
+
+With fallback disabled, a live failure reports the problem and resumes
+listening without another transcription request. Enabling fallback may incur
+both a live charge and a static upload charge; logs identify the fallback.
+HAL does not reconnect/retry a live turn automatically, and static uploads
+also use one attempt. Partial or damaged commands never reach the LLM.
+
+Audio resampling and network work run in a background thread. Stateful
+resampling converts the microphone's native PCM to 24 kHz without duplicating
+or dropping samples between chunks. Live audio retains the microphone's input
+level; static uploads retain the existing whole-recording normalization.
+The existing local speech endpoint commits the live turn. It sends no more
+audio after the command ends and closes the connection after the final result.
+See the [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription)
+for the model's streaming behavior. No OpenAI SDK upgrade is required.
+
 ## Behavior
 
 Default detection uses base.en on CPU with INT8, a three-second rolling
@@ -188,8 +249,9 @@ word such as “how”.
 Holding spacebar still activates recording; releasing it ends the recording.
 Press and release are watched together, including while wake inference is
 busy. Spacebar takes priority when it is pressed during a wake scan. Both
-paths use the same continuous capture and close the microphone before query
-transcription and HAL's reply, retaining the existing turn-taking behavior.
+paths use the same continuous capture and close the microphone before HAL
+processes the final transcript and replies. Static transcription starts after
+capture; live transcription overlaps capture.
 
 The stream is allowed to finish its current short read before stopping. This
 avoids the abort-before-join ordering that left a blocked reader in the
@@ -201,8 +263,10 @@ existing local transcriber's 30-second audio limit. An overlong request is
 discarded with a message so a partial instruction is not sent to the LLM.
 On microphone input overflow, HAL discards the entire capture, turns off the
 LED, reports that the request needs repeating, and reopens the microphone after
-a short pause. The display server stays running. Damaged audio is never sent
-for transcription. Other unexpected capture failures still surface as errors.
+a short pause. The display server stays running. Static mode never uploads a
+discarded capture; live mode cancels the unfinished turn, whose earlier audio
+may already have been sent. Neither mode forwards a damaged command to the LLM.
+Other unexpected capture failures still surface as errors.
 
 The input stream requests 0.25 seconds of buffering headroom instead of the
 device's low-latency setting. This gives the reader more tolerance for scheduling
@@ -255,7 +319,7 @@ from the repository root, then start HAL normally. `WAKE_MODELS="tiny.en base.en
 processing. Query transcription remains controlled by `TRANSCRIPTION_BACKEND`
 and `WHISPER_MODEL_NAME`.
 
-With `TRANSCRIPTION_BACKEND=api`, queries use `gpt-4o-mini-transcribe`;
+With `TRANSCRIPTION_BACKEND=api` and static mode, queries use `gpt-4o-mini-transcribe`;
 `WHISPER_MODEL_NAME` only selects the model when the backend is `local`.
 Startup logs identify both the local wake model/beam size and the actual query
 transcription backend/model, so the two paths can be distinguished in timing runs.
@@ -282,6 +346,20 @@ latency. DEBUG_ON can remain off for timing tests; turn it on to save the latest
 query as `last_command.wav`. Keep `DEBUG_PLAYBACK=False` when measuring normal
 response time.
 
+Live mode also logs connection setup time, the first partial transcript's timing
+(without its text), and the final result's delay after recording ends. The
+`transcription wait after capture` line measures only the remaining wait, since
+earlier work overlaps recording. Check `Transcription source` to distinguish a
+live result from a configured static fallback.
+
+`Timing: estimated speech end to ... playback start` is the most useful total
+for comparing the delay before HAL's first voice. Use `acknowledgment` for an
+external request and `reply` for a direct answer. The speech-end estimate uses
+local VAD, the microphone read clock, and the driver's reported input latency;
+it is not a physical speaker/microphone measurement. It is omitted if no speech
+endpoint can be estimated. These new timing lines are also INFO, so `DEBUG_ON`
+can remain off.
+
 ## Validation
 
 The earlier beam-5 standalone Mac live run produced 13 detections and 13 complete command
@@ -304,6 +382,7 @@ spacebar priority during slow inference. Run them with:
 ```bash
 python -m unittest discover -s tests -p test_voice_input.py -v
 python -m unittest discover -s tests -p test_hal_recovery.py -v
+python -m unittest discover -s tests -p test_live_transcription.py -v
 python -m unittest discover -s tests -p test_icloud_auth.py -v
 ```
 
@@ -314,9 +393,14 @@ cover beam sizes 1, 2, and 5 during warmup and live analysis. Simulated timings
 verify that stage measurements exclude idle listening, reset for each request,
 and record playback start before waiting for playback to finish. API tests use
 the existing OpenAI SDK with a mock HTTP transport; they need no API key or credits.
+The live suite additionally uses a local WebSocket server with the real transport
+package. It checks streaming before the endpoint, exact resampling across chunk
+boundaries, committed-item matching, timeout/cancellation, optional fallback,
+and recovery after failed turns. Install `src/requirements-live.txt` to run it.
 
 The shutdown order is verified with an instrumented blocking stream. The user's
-latest Pi run completed three requests with no input overflows after increasing
-the input buffer. The new beam setting and timing logs still need a live Pi run.
-The existing query transcription, LLM, iCloud, and TTS integrations are not
-replaced. Live test audio/transcripts are not included in this repository.
+Pi runs completed requests without input overflows after increasing the input
+buffer. Subsequent tiny.en/API/Fast runs established a working static baseline.
+Live transcription still needs a real API and Pi microphone comparison; the
+automated checks do not establish account access, recognition accuracy, or a
+latency improvement. Live test audio/transcripts are not included in this repository.

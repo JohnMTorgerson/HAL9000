@@ -53,6 +53,13 @@ class AudioHistory:
                 return 0
             return max(0, min(self.total, self.total + round((wall - self.last_wall) * self.rate)))
 
+    def time_at(self, sample):
+        """Estimate sample time from the latest read; device buffering is separate."""
+        with self.lock:
+            if self.last_wall is None or not 0 <= sample <= self.total:
+                return None
+            return self.last_wall - (self.total - sample) / self.rate
+
 
 def to_audio(samples, rate):
     audio = np.asarray(samples, dtype=np.float32) / 32768

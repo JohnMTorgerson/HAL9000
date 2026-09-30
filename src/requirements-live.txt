@@ -1,0 +1,2 @@
+# Optional live transcription transport; no OpenAI SDK upgrade is required.
+websockets==15.0.1

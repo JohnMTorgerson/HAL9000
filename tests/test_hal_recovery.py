@@ -19,6 +19,7 @@ sys.path.insert(0, str(SRC))
 from audio_devices import choose_input_device
 from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
+from live_transcription import TranscriptionError
 
 
 def load_hal_function(name, namespace):
@@ -253,10 +254,13 @@ class MainLoopTests(unittest.TestCase):
             'normalize_audio': lambda audio: audio,
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,
+            'TranscriptionError': TranscriptionError,
             'AudioOverflowError': AudioOverflowError,
             'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
         })
         namespace['stt'].transcribe.return_value = 'Hey HAL, are you there?'
+        namespace['stt'].mode = 'static'
+        namespace['voice_input'].last_speech_end_at = None
         namespace['handle_api_call'].return_value = 'service result'
         return namespace, load_hal_function('run', namespace)
 
@@ -293,6 +297,50 @@ class MainLoopTests(unittest.TestCase):
             run()
         ns['DisplayServerManager'].return_value.stop.assert_called_once()
         ns['led'].off.assert_called_once()
+
+    def test_live_turn_is_wired_to_transcription_and_closed_on_success_failure_and_interrupt(self):
+        for scenario in ('success', 'transcription_failure', 'overflow'):
+            with self.subTest(scenario=scenario):
+                ns, run = self.fixture()
+                ns.update(wave=MagicMock(), voice=Mock(), syn_config=object(), USER='fixture',
+                          strip_name_at_sentence_end=lambda text, name: text, sf=Mock())
+                ns['sf'].read.return_value = ([.1], 16000)
+                ns['stt'].mode = 'live'
+                streams = [Mock(), Mock()]
+                ns['stt'].create_live_stream.side_effect = streams
+                ns['llm'].get_response.return_value = 'I am ready.'
+                if scenario == 'transcription_failure':
+                    ns['stt'].transcribe.side_effect = TranscriptionError('Live service unavailable.')
+                reads = []
+                def read_command(on_trigger, audio_stream):
+                    reads.append(audio_stream)
+                    self.assertIs(audio_stream, streams[len(reads) - 1])
+                    ns['DisplayServerManager'].return_value.stop.assert_not_called()
+                    if len(reads) == 2:
+                        streams[0].close.assert_called_once()
+                        raise KeyboardInterrupt
+                    on_trigger('wakeword')
+                    if scenario == 'overflow':
+                        raise AudioOverflowError('input overflow')
+                    ns['voice_input'].last_speech_end_at = -.8
+                    return [.1], 16000
+                ns['voice_input'].read_command.side_effect = read_command
+                with self.assertRaises(SystemExit) as stopped:
+                    run()
+                self.assertEqual(stopped.exception.code, 0)
+                for stream in streams:
+                    stream.close.assert_called_once()
+                if scenario == 'overflow':
+                    ns['stt'].transcribe.assert_not_called()
+                else:
+                    ns['stt'].transcribe.assert_called_once_with([.1], 16000, live_stream=streams[0])
+                if scenario == 'success':
+                    ns['llm'].get_response.assert_called_once_with('Hey HAL, are you there?')
+                    self.assertEqual(ns['play_audio'].call_args.kwargs['speech_ended_at'], -.8)
+                else:
+                    ns['llm'].get_response.assert_not_called()
+                    ns['play_audio'].assert_not_called()
+                ns['DisplayServerManager'].return_value.stop.assert_called_once()
 
     def test_repeated_input_overflows_keep_display_up_and_never_transcribe(self):
         ns, run = self.fixture()
@@ -340,7 +388,8 @@ class MainLoopTests(unittest.TestCase):
             return [.1], 16000
         ns['voice_input'].read_command.side_effect = read_command
         playback_elapsed = []
-        def play(filename, *, label, triggered_at, capture_ready_at):
+        def play(filename, *, label, triggered_at, capture_ready_at, speech_ended_at):
+            self.assertIsNone(speech_ended_at)
             self.assertEqual((triggered_at, capture_ready_at), captures[-1])
             playback_elapsed.append((label, clock.now - triggered_at))
             clock.advance(.6)
@@ -385,10 +434,11 @@ class PlaybackTimingTests(unittest.TestCase):
             self.assertIn('Timing: reply playback started; preparation 0.200s, stream startup 0.100s, audio duration 1.000s.', messages)
             self.assertIn('Timing: trigger to reply playback start 5.300s.', messages)
             self.assertIn('Timing: capture ready to reply playback start 4.300s.', messages)
+            self.assertIn('Timing: estimated speech end to reply playback start 4.800s.', messages)
             clock.advance(1.)
         sd.wait.side_effect = wait
         play = load_hal_function('play_audio', ns)
-        play('fixture.wav', label='reply', triggered_at=5., capture_ready_at=6.)
+        play('fixture.wav', label='reply', triggered_at=5., capture_ready_at=6., speech_ended_at=5.5)
         self.assertEqual(logger.info.call_args.args[0] % logger.info.call_args.args[1:],
                          'Timing: reply playback finished; stream wait 1.000s.')
 

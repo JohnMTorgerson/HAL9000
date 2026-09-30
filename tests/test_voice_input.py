@@ -63,6 +63,8 @@ class CaptureTests(unittest.TestCase):
         h.append(np.arange(35), wall=3.5)
         np.testing.assert_array_equal(h.read(15, 35), np.arange(15, 35))
         self.assertEqual(h.sample_at(3.0), 30)
+        self.assertEqual(h.time_at(30), 3.0)
+        self.assertIsNone(h.time_at(36))
         with self.assertRaises(RuntimeError):
             h.read(14)
 
@@ -238,6 +240,70 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(rate, 16000)
         np.testing.assert_array_equal(audio[:16000], signal[:16000].astype(np.float32) / 32768)
         self.assertTrue(state['capture_during_decode'])
+        self.assertTrue(state['closed'] and state['keys_closed'])
+
+    def test_live_audio_starts_after_trigger_and_matches_complete_capture(self):
+        for kind in ('wake', 'spacebar'):
+            with self.subTest(kind=kind):
+                clock, signal, state, voice = self.fixture(kind)
+                stream = Mock()
+                chunks, triggered = [], []
+                def start(rate):
+                    self.assertTrue(triggered)
+                    self.assertEqual(rate, 16000)
+                    self.assertFalse(state['closed'])
+                def append(chunk):
+                    self.assertFalse(state['closed'])
+                    chunks.append(chunk.copy())
+                stream.start.side_effect = start
+                stream.append.side_effect = append
+                with patch('voice_input.time', clock):
+                    audio, rate = voice.read_command(triggered.append, audio_stream=stream)
+                np.testing.assert_array_equal(np.concatenate(chunks).astype(np.float32) / 32768, audio)
+                stream.start.assert_called_once()
+                stream.end_audio.assert_called_once()
+                stream.cancel.assert_not_called()
+                self.assertAlmostEqual(voice.last_speech_end_at, .75)  # speech ends at 1s, minus .25s input latency
+
+    def test_live_capture_failure_cancels_without_committing_partial_audio(self):
+        clock, signal, state, voice = self.fixture(endless=True)
+        stream = Mock()
+        voice.last_speech_end_at = -123
+        with patch('voice_input.time', clock):
+            with self.assertRaises(CommandTooLongError):
+                voice.read_command(audio_stream=stream)
+        self.assertTrue(stream.append.called)
+        stream.end_audio.assert_not_called()
+        stream.cancel.assert_called_once()
+        self.assertIsNone(voice.last_speech_end_at)
+        self.assertTrue(state['closed'] and state['keys_closed'])
+
+    def test_live_overflow_before_trigger_never_starts_a_session(self):
+        clock, signal, state, voice = self.fixture()
+        stream = Mock()
+        voice.detector.analyze = Mock(side_effect=AudioOverflowError('lost audio'))
+        with patch('voice_input.time', clock):
+            with self.assertRaises(AudioOverflowError):
+                voice.read_command(audio_stream=stream)
+        stream.start.assert_not_called()
+        stream.append.assert_not_called()
+        stream.end_audio.assert_not_called()
+        stream.cancel.assert_called_once()
+
+    def test_live_overflow_after_trigger_discards_the_unfinished_turn(self):
+        clock, signal, state, voice = self.fixture()
+        stream = Mock()
+        def append(chunk):
+            clock.capture.check = Mock(side_effect=AudioOverflowError('lost audio'))
+        stream.append.side_effect = append
+        with patch('voice_input.time', clock):
+            with self.assertRaises(AudioOverflowError):
+                voice.read_command(audio_stream=stream)
+        stream.start.assert_called_once()
+        stream.append.assert_called_once()
+        stream.end_audio.assert_not_called()
+        stream.cancel.assert_called_once()
+        self.assertIsNone(voice.last_speech_end_at)
         self.assertTrue(state['closed'] and state['keys_closed'])
 
     def test_overflow_during_decode_discards_match_and_next_capture_succeeds(self):

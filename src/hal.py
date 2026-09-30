@@ -16,6 +16,7 @@ import io
 from llm_client import LLMClient, LLMServiceError
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
+from live_transcription import TranscriptionError
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -130,9 +131,13 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # ------------------------------------------------------------
 # Load Whisper – speech to text model
 # ------------------------------------------------------------
-stt = WhisperSTT()
-logger.info('Query transcription ready: %s (%s).', stt.backend,
+stt = WhisperSTT(logger=logger)
+logger.info('Query transcription ready: %s / %s (%s).', stt.mode, stt.backend,
+            stt.live_settings.model if stt.mode == 'live' else
             stt.model_name if stt.backend == 'local' else stt.API_MODEL)
+if stt.mode == 'live':
+    logger.info('Live transcription delay: %s; static API fallback: %s.',
+                stt.live_settings.delay, 'enabled' if stt.fallback else 'disabled')
 # The detector is local and lightweight; query transcription still uses stt above.
 voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_device("input")[0])
 
@@ -178,10 +183,12 @@ def run():
     display_mgr.start()
 
     while True:
+        live_stream = None
         try:
             triggered_at = None
             # Capture continues while the wake detector processes its rolling window.
-            # read_command closes the microphone before HAL transcribes or speaks.
+            # Live transcription can overlap capture. The microphone still
+            # closes before any query reaches the LLM or HAL starts speaking.
             def on_trigger(kind):
                 nonlocal triggered_at
                 triggered_at = time.perf_counter()
@@ -189,11 +196,19 @@ def run():
                 logger.info("Detected %s command: lighting LED", kind)
                 led.on()
 
-            audio, fs = voice_input.read_command(on_trigger=on_trigger)
+            if stt.mode == 'live':
+                live_stream = stt.create_live_stream()
+                audio, fs = voice_input.read_command(on_trigger=on_trigger, audio_stream=live_stream)
+            else:
+                audio, fs = voice_input.read_command(on_trigger=on_trigger)
             capture_ready_at = time.perf_counter()
+            speech_ended_at = voice_input.last_speech_end_at
             if triggered_at is not None:
                 logger.info('Timing: trigger to capture ready %.3fs (includes microphone cleanup).',
                             capture_ready_at - triggered_at)
+            if speech_ended_at is not None:
+                logger.info('Timing: estimated speech end to capture ready %.3fs.',
+                            capture_ready_at - speech_ended_at)
 
             # normalize recorded audio
             stage_started = time.perf_counter()
@@ -210,8 +225,13 @@ def run():
 
             # transcribe audio to text
             stage_started = time.perf_counter()
-            user_input = stt.transcribe(audio, fs)
-            logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
+            if live_stream is not None:
+                user_input = stt.transcribe(audio, fs, live_stream=live_stream)
+                logger.info('Timing: transcription wait after capture %.3fs (live or configured fallback).',
+                            time.perf_counter() - stage_started)
+            else:
+                user_input = stt.transcribe(audio, fs)
+                logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
             logger.display(f"USER: {user_input}")
 
             # get HAL's response from LLM
@@ -237,7 +257,8 @@ def run():
             while hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.display("HAL: Just a moment...")
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
-                           triggered_at=triggered_at, capture_ready_at=capture_ready_at)
+                           triggered_at=triggered_at, capture_ready_at=capture_ready_at,
+                           speech_ended_at=speech_ended_at)
 
                 logger.display(f"HAL (external request): {hal_reply}")
                 command = shlex.split(hal_reply[len("[EXTERNAL_API_CALL]"):].strip()) # shlex splits by space, except respect quotes
@@ -281,7 +302,7 @@ def run():
 
             # play audio of HAL's response from normalized file
             play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
-                       capture_ready_at=capture_ready_at)
+                       capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at)
 
             #turn LED off
             logger.info("Turning LED off")
@@ -299,7 +320,7 @@ def run():
             led.off()
             continue
 
-        except LLMServiceError as exc:
+        except (LLMServiceError, TranscriptionError) as exc:
             led.off()
             logger.error("%s", exc)
             logger.display(f"HAL: {exc}")
@@ -316,6 +337,9 @@ def run():
             display_mgr.stop()
             led.off()
             raise
+        finally:
+            if live_stream is not None:
+                live_stream.close()
 
 # ------------------------------------------------------------
 # API CALL
@@ -554,7 +578,8 @@ def handle_api_call(api_type, params, user_input):
 #     except Exception as e:
 #         logger.error(f"Audio playback failed: {e}")
 
-def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None):
+def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None,
+               speech_ended_at=None):
     preparation_started = time.perf_counter()
     # Load audio, apply high pass filter
     audio = AudioSegment.from_file(filename)
@@ -603,6 +628,9 @@ def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=N
         logger.info('Timing: trigger to %s playback start %.3fs.', label, playback_started - triggered_at)
     if capture_ready_at is not None:
         logger.info('Timing: capture ready to %s playback start %.3fs.', label, playback_started - capture_ready_at)
+    if speech_ended_at is not None:
+        logger.info('Timing: estimated speech end to %s playback start %.3fs.',
+                    label, playback_started - speech_ended_at)
     sd.wait()
     logger.info('Timing: %s playback finished; stream wait %.3fs.', label, time.perf_counter() - playback_started)
 

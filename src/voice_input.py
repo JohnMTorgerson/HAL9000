@@ -63,6 +63,7 @@ class VoiceInput:
         self.device_selector = device_selector
         self.capture_factory = capture_factory
         self.keyboard_factory = keyboard_factory
+        self.last_speech_end_at = None
 
     @classmethod
     def from_env(cls, logger, device_selector=lambda: None):
@@ -83,8 +84,9 @@ class VoiceInput:
             logger.info('Wake detection disabled by WAKE_ENABLED; spacebar mode only.')
         return cls(settings, logger, detector, device_selector)
 
-    def read_command(self, on_trigger=lambda kind: None):
+    def read_command(self, on_trigger=lambda kind: None, audio_stream=None):
         settings = self.settings
+        self.last_speech_end_at = None
         device = os.getenv('HAL_INPUT_DEVICE')
         if device:
             device = int(device) if device.isdigit() else device
@@ -93,6 +95,9 @@ class VoiceInput:
         capture = self.capture_factory(device=device, channel=settings.channel,
                                        latency=settings.input_latency)
         keys = self.keyboard_factory(self.logger)
+        stream_cursor = None
+        completed = False
+        speech_sample = None
         try:
             capture.start()
             keys.start()
@@ -110,6 +115,8 @@ class VoiceInput:
                              'Hey HAL or spacebar' if self.detector else 'spacebar')
             self.logger.info('Microphone input latency: %.3fs (requested %.3fs).',
                              getattr(capture, 'latency', settings.input_latency), settings.input_latency)
+            self.logger.info('End-of-speech silence: %.2fs; query audio mode: %s.',
+                             settings.silence, 'live' if audio_stream is not None else 'static')
             while True:
                 capture.check()
                 total, _ = history.position()
@@ -126,14 +133,18 @@ class VoiceInput:
                     end = total
                     reason = None
                     if active['kind'] == 'spacebar' and released is not None:
+                        if 'release_end' not in active:
+                            active['release_end'] = history.sample_at(released) + round(.1 * rate)
+                        end = min(total, active['release_end'])
                         # Keep a short tail after release; capture remains live.
                         if time.perf_counter() - released >= .1:
-                            end = min(total, history.sample_at(released) + round(.1 * rate))
                             reason = 'spacebar released'
                     elif active['kind'] == 'wakeword' and total - last_endpoint >= round(.2 * rate):
                         last_endpoint = total
                         audio = to_audio(history.read(active['start'], total), rate)
                         speech_end = self.detector.last_speech_sample(audio)
+                        speech_sample = (active['start'] + round(speech_end / RATE * rate)
+                                         if speech_end is not None else None)
                         last_speech = (active['start'] + round(speech_end / RATE * rate)
                                        if speech_end is not None else active['detected'])
                         if (total - active['detected'] >= .5 * rate and
@@ -142,13 +153,37 @@ class VoiceInput:
                     if elapsed >= settings.maximum:
                         # Do not send a potentially incomplete instruction to the LLM.
                         raise CommandTooLongError(f'Command exceeded {settings.maximum:g} seconds; discarded to avoid a truncated request.')
+                    if audio_stream is not None:
+                        if stream_cursor is None:
+                            audio_stream.start(rate)
+                            stream_cursor = active['start']
+                        if end < stream_cursor:
+                            audio_stream.cancel('The live audio exceeded the final command boundary.')
+                        elif reason or end - stream_cursor >= round(.1 * rate):
+                            # Only copy native PCM here. Resampling and network IO
+                            # run off-thread; each sample is queued exactly once.
+                            if end > stream_cursor:
+                                audio_stream.append(history.read(stream_cursor, end))
+                                stream_cursor = end
                     if reason:
                         capture.check()
                         audio = to_audio(history.read(active['start'], end), rate)
                         if not len(audio):
                             raise RuntimeError('No microphone audio captured for this command.')
+                        if audio_stream is not None:
+                            audio_stream.end_audio()
+                        if active['kind'] == 'spacebar' and self.detector is not None:
+                            speech_end = self.detector.last_speech_sample(audio)
+                            speech_sample = (active['start'] + round(speech_end / RATE * rate)
+                                             if speech_end is not None else None)
+                        if speech_sample is not None:
+                            delivered_at = history.time_at(speech_sample)
+                            if delivered_at is not None:
+                                self.last_speech_end_at = delivered_at - getattr(
+                                    capture, 'latency', settings.input_latency)
                         self.logger.info('Captured %.2fs via %s; endpoint: %s; skipped wake scan slots: %s.',
                                          len(audio) / RATE, active['kind'], reason, skipped)
+                        completed = True
                         return audio, RATE
                     time.sleep(.02)
                     continue
@@ -178,6 +213,10 @@ class VoiceInput:
                     self.logger.debug('Wake scan took %.3fs (interval %.3fs); next scan uses latest audio.',
                                       decision['seconds'], settings.hop)
         finally:
+            if not completed:
+                self.last_speech_end_at = None
+                if audio_stream is not None:
+                    audio_stream.cancel('The microphone command was discarded.')
             try:
                 keys.close()
             finally:
