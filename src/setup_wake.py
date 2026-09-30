@@ -48,7 +48,8 @@ def main():
     from voice_input import VoiceSettings
     settings = VoiceSettings.from_env()
     print('Verifying local model initialization...', flush=True)
-    WhisperWakeDetector(names, settings.threads, settings.max_gain_db, settings.normalization, directory)
+    WhisperWakeDetector(names, settings.threads, settings.max_gain_db, settings.normalization,
+                        directory, beam_size=settings.beam_size)
     print('Wake detection ready. Start HAL normally: cd src && python hal.py', flush=True)
 
 if __name__ == '__main__':

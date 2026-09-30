@@ -12,6 +12,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "base")
 
 class WhisperSTT(SpeechToText):
+    API_MODEL = 'gpt-4o-mini-transcribe'
+
     def __init__(self, model_name=None):
         self.backend = TRANSCRIPTION_BACKEND
         self.model_name = model_name or WHISPER_MODEL_NAME
@@ -56,7 +58,7 @@ class WhisperSTT(SpeechToText):
 
             with open(tmp_path, "rb") as f:
                 transcript = self.client.audio.transcriptions.create(
-                    model="gpt-4o-mini-transcribe",
+                    model=self.API_MODEL,
                     file=f
                 )
 

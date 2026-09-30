@@ -24,6 +24,7 @@ class VoiceSettings:
     max_gain_db: float = 24.
     normalization: str = 'capped'
     input_latency: float = .25
+    beam_size: int = 2
 
     def __post_init__(self):
         if not (.25 <= self.hop <= self.window <= 6):
@@ -36,6 +37,8 @@ class VoiceSettings:
             raise ValueError('WAKE_NORMALIZATION must be capped or peak.')
         if not (.02 <= self.input_latency <= 2):
             raise ValueError('Use HAL_INPUT_LATENCY_SECONDS 0.02–2.')
+        if not (isinstance(self.beam_size, int) and 1 <= self.beam_size <= 10):
+            raise ValueError('Use an integer WAKE_BEAM_SIZE from 1 to 10.')
 
     @classmethod
     def from_env(cls):
@@ -48,7 +51,8 @@ class VoiceSettings:
                    channel=int(os.getenv('HAL_INPUT_CHANNEL', 1)),
                    max_gain_db=float(os.getenv('WAKE_MAX_GAIN_DB', 24)),
                    normalization=os.getenv('WAKE_NORMALIZATION', 'capped'),
-                   input_latency=float(os.getenv('HAL_INPUT_LATENCY_SECONDS', .25)))
+                   input_latency=float(os.getenv('HAL_INPUT_LATENCY_SECONDS', .25)),
+                   beam_size=int(os.getenv('WAKE_BEAM_SIZE', 2)))
 
 class VoiceInput:
     def __init__(self, settings, logger, detector=None, device_selector=lambda: None,
@@ -68,9 +72,10 @@ class VoiceInput:
             try:
                 from wake_detector import WhisperWakeDetector
                 detector = WhisperWakeDetector(settings.models, settings.threads,
-                    settings.max_gain_db, settings.normalization)
-                logger.info('Whisper wake detection ready: %s, %.2fs windows / %.2fs interval, CPU INT8.',
-                            ', '.join(settings.models), settings.window, settings.hop)
+                    settings.max_gain_db, settings.normalization, beam_size=settings.beam_size)
+                logger.info('Whisper wake detection ready: %s, %.2fs windows / %.2fs interval, '
+                            'CPU INT8, beam %s, %s threads.', ', '.join(settings.models),
+                            settings.window, settings.hop, settings.beam_size, settings.threads)
             except Exception:
                 logger.exception('Wake detector unavailable; spacebar remains usable. From the repository root run '
                                  'python -m pip install -r src/requirements-wake.txt, then python src/setup_wake.py.')

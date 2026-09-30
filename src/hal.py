@@ -131,6 +131,8 @@ syn_config = SynthesisConfig(volume=1.0, length_scale=1.0, noise_scale=1.0, nois
 # Load Whisper – speech to text model
 # ------------------------------------------------------------
 stt = WhisperSTT()
+logger.info('Query transcription ready: %s (%s).', stt.backend,
+            stt.model_name if stt.backend == 'local' else stt.API_MODEL)
 # The detector is local and lightweight; query transcription still uses stt above.
 voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_device("input")[0])
 
@@ -175,32 +177,45 @@ def run():
 
     while True:
         try:
+            triggered_at = None
             # Capture continues while the wake detector processes its rolling window.
             # read_command closes the microphone before HAL transcribes or speaks.
             def on_trigger(kind):
+                nonlocal triggered_at
+                triggered_at = time.perf_counter()
                 logger.info("====================================================================")
                 logger.info("Detected %s command: lighting LED", kind)
                 led.on()
 
             audio, fs = voice_input.read_command(on_trigger=on_trigger)
+            capture_ready_at = time.perf_counter()
+            if triggered_at is not None:
+                logger.info('Timing: trigger to capture ready %.3fs (includes microphone cleanup).',
+                            capture_ready_at - triggered_at)
 
             # normalize recorded audio
+            stage_started = time.perf_counter()
             audio = normalize_audio(audio)
 
             # Keep the debug recording; replay requires its own explicit opt-in.
             if DEBUG_ON or DEBUG_PLAYBACK:
                 sf.write("last_command.wav", audio, fs)
                 logger.debug("Saved last command to last_command.wav")
+            logger.info('Timing: query audio preparation %.3fs.', time.perf_counter() - stage_started)
             if DEBUG_PLAYBACK:
                 logger.debug("DEBUG_PLAYBACK enabled – playing last command...")
-                play_audio("last_command.wav")
+                play_audio("last_command.wav", label='debug query')
 
             # transcribe audio to text
+            stage_started = time.perf_counter()
             user_input = stt.transcribe(audio, fs)
+            logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
             logger.display(f"USER: {user_input}")
 
             # get HAL's response from LLM
+            stage_started = time.perf_counter()
             hal_reply = llm.get_response(user_input)
+            logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
             # first testing if the query looks like a factual question about a named entity we can search for
@@ -219,14 +234,17 @@ def run():
             # keep handling API calls until HAL gives a final answer
             while hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.display("HAL: Just a moment...")
-                play_audio("HAL-clips/just_a_moment_normalized.aiff")
+                play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
+                           triggered_at=triggered_at, capture_ready_at=capture_ready_at)
 
                 logger.display(f"HAL (external request): {hal_reply}")
                 command = shlex.split(hal_reply[len("[EXTERNAL_API_CALL]"):].strip()) # shlex splits by space, except respect quotes
                 api_type = command[0].lower()
                 params = command[1:]
 
+                stage_started = time.perf_counter()
                 api_response = handle_api_call(api_type, params, user_input)
+                logger.info('Timing: external request %s %.3fs.', api_type, time.perf_counter() - stage_started)
                 enriched_prompt = f"[EXTERNAL_API_RESPONSE] {api_response}"
 
                 if not DEBUG_ON and len(enriched_prompt) > 800:
@@ -234,7 +252,9 @@ def run():
                 logger.info(f"Enriched prompt for HAL: {enriched_prompt}")
 
 
+                stage_started = time.perf_counter()
                 hal_reply = llm.get_response(enriched_prompt)
+                logger.info('Timing: follow-up LLM response %.3fs.', time.perf_counter() - stage_started)
 
             # sanitize HAL's habit of ending sentences with ", {USER}"
             filtered_reply = strip_name_at_sentence_end(hal_reply, name=USER)
@@ -245,16 +265,21 @@ def run():
             logger.display(f"HAL: {hal_reply}")
 
             # create audio from response text and save to file
+            stage_started = time.perf_counter()
             with wave.open("hal_output.wav", "wb") as wav_file:
                 voice.synthesize_wav(hal_reply, wav_file, syn_config=syn_config)
+            logger.info('Timing: voice synthesis %.3fs.', time.perf_counter() - stage_started)
 
             # normalize audio file
+            stage_started = time.perf_counter()
             audio, fs = sf.read("hal_output.wav", dtype="float32")
             normalized_audio = normalize_audio(audio)
             sf.write("hal_output.wav", normalized_audio, fs)
+            logger.info('Timing: reply audio normalization %.3fs.', time.perf_counter() - stage_started)
 
             # play audio of HAL's response from normalized file
-            play_audio("hal_output.wav")
+            play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
+                       capture_ready_at=capture_ready_at)
 
             #turn LED off
             logger.info("Turning LED off")
@@ -527,7 +552,8 @@ def handle_api_call(api_type, params, user_input):
 #     except Exception as e:
 #         logger.error(f"Audio playback failed: {e}")
 
-def play_audio(filename):
+def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None):
+    preparation_started = time.perf_counter()
     # Load audio, apply high pass filter
     audio = AudioSegment.from_file(filename)
     audio = audio.high_pass_filter(HI_PASS_FREQ)
@@ -565,8 +591,18 @@ def play_audio(filename):
         data = data / peak  # scale so max amplitude is 1.0
 
     # Play and wait
+    stream_started = time.perf_counter()
     sd.play(data, samplerate=sr, device=output_device)
+    playback_started = time.perf_counter()
+    # This is the software stream start, not a measurement at the loudspeaker.
+    logger.info('Timing: %s playback started; preparation %.3fs, stream startup %.3fs, audio duration %.3fs.',
+                label, stream_started - preparation_started, playback_started - stream_started, len(data) / sr)
+    if triggered_at is not None:
+        logger.info('Timing: trigger to %s playback start %.3fs.', label, playback_started - triggered_at)
+    if capture_ready_at is not None:
+        logger.info('Timing: capture ready to %s playback start %.3fs.', label, playback_started - capture_ready_at)
     sd.wait()
+    logger.info('Timing: %s playback finished; stream wait %.3fs.', label, time.perf_counter() - playback_started)
 
 def normalize_audio(audio, peak=0.95):
     """

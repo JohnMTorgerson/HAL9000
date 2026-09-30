@@ -13,9 +13,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from audio_capture import AudioHistory, AudioOverflowError, MicrophoneCapture, to_audio
 from spacebar_trigger import SpacebarTrigger
 from voice_input import VoiceInput, VoiceSettings, CommandTooLongError
-from wake_detector import matches_wake
+from wake_detector import WhisperWakeDetector, matches_wake
 
 LOG = logging.getLogger('voice-test')
+
+class WakeConfigurationTests(unittest.TestCase):
+    def test_beam_setting_reaches_warmup_and_each_live_model(self):
+        for beam in (1, 2, 5):
+            with self.subTest(beam=beam):
+                models = []
+                def make_model(*args, **kwargs):
+                    model = Mock()
+                    model.transcribe.side_effect = lambda *a, **kw: (
+                        iter([types.SimpleNamespace(text='Hey Hal, what time is it?')]), None)
+                    models.append(model)
+                    return model
+                fake_whisper = types.SimpleNamespace(WhisperModel=make_model)
+                fake_vad = types.SimpleNamespace(VadOptions=Mock(),
+                    get_speech_timestamps=lambda *a: [{'start': 0, 'end': 16000}])
+                with patch.dict(sys.modules, {'faster_whisper': fake_whisper, 'faster_whisper.vad': fake_vad}), \
+                     patch('wake_detector.model_path', return_value=Path('/fixture')):
+                    detector = WhisperWakeDetector(('tiny.en', 'base.en'), beam_size=beam)
+                    result = detector.analyze(np.ones(16000, dtype=np.float32) * .1)
+                self.assertTrue(result['matched'])
+                self.assertEqual(result['models'], ['tiny.en', 'base.en'])
+                for model in models:
+                    self.assertEqual(model.transcribe.call_count, 2)
+                    self.assertEqual([call.kwargs['beam_size'] for call in model.transcribe.call_args_list],
+                                     [beam, beam])
+
+    def test_default_and_env_override_reach_detector(self):
+        factory = Mock()
+        fake = types.SimpleNamespace(WhisperWakeDetector=factory)
+        for env, expected in [({}, 2), ({'WAKE_BEAM_SIZE': '1'}, 1), ({'WAKE_BEAM_SIZE': '5'}, 5)]:
+            with self.subTest(expected=expected), patch.dict('os.environ', env, clear=True), \
+                 patch.dict(sys.modules, {'wake_detector': fake}):
+                voice = VoiceInput.from_env(LOG)
+                self.assertIsNotNone(voice.detector)
+                self.assertEqual(factory.call_args.kwargs['beam_size'], expected)
+        for value in ('0', '11', '1.5', 'nan'):
+            with self.subTest(value=value), patch.dict('os.environ', {'WAKE_BEAM_SIZE': value}):
+                with self.assertRaises(ValueError):
+                    VoiceSettings.from_env()
+
 
 class CaptureTests(unittest.TestCase):
     def test_history_wrap_does_not_silently_lose_command_start(self):

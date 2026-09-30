@@ -8,9 +8,10 @@ import shlex
 import sys
 import types
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import httpx
+import numpy as np
 from openai import OpenAI
 
 SRC = Path(__file__).resolve().parents[1] / 'src'
@@ -161,6 +162,18 @@ class LLMTests(unittest.TestCase):
         self.assertEqual([turn['role'] for turn in client.chat_history], ['user', 'assistant'])
 
 
+class SimulatedClock:
+    def __init__(self):
+        self.now = 0.
+
+    def perf_counter(self):
+        return self.now
+
+    def advance(self, seconds, result=None):
+        self.now += seconds
+        return result
+
+
 class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
@@ -173,6 +186,7 @@ class MainLoopTests(unittest.TestCase):
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,
             'AudioOverflowError': AudioOverflowError,
+            'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
         })
         namespace['stt'].transcribe.return_value = 'Hey HAL, are you there?'
         namespace['handle_api_call'].return_value = 'service result'
@@ -233,6 +247,82 @@ class MainLoopTests(unittest.TestCase):
         self.assertEqual(stopped.exception.code, 0)
         self.assertEqual(len(reads), 3)
         display_mgr.stop.assert_called_once()
+
+    def test_stage_timings_exclude_idle_and_reset_between_requests_with_debug_off(self):
+        ns, run = self.fixture()
+        clock = SimulatedClock()
+        ns.update(time=clock, wave=MagicMock(), voice=Mock(), syn_config=object(),
+                  USER='fixture', strip_name_at_sentence_end=lambda text, name: text,
+                  sf=Mock())
+        ns['sf'].read.return_value = ([.1], 16000)
+        ns['stt'].transcribe.side_effect = lambda *args: clock.advance(1., 'Hey Hal, are you there?')
+        replies = iter(['[EXTERNAL_API_CALL] calendar_next_event', 'I am ready.', 'I am ready.'])
+        ns['llm'].get_response.side_effect = lambda text: clock.advance(2., next(replies))
+        ns['handle_api_call'].side_effect = lambda *args: clock.advance(.25, 'calendar result')
+        ns['voice'].synthesize_wav.side_effect = lambda *a, **kw: clock.advance(.3)
+        captures = []
+        def read_command(on_trigger):
+            if len(captures) == 2:
+                raise KeyboardInterrupt
+            clock.advance(100.)  # Waiting for the user must not count as response time.
+            on_trigger('wakeword')
+            triggered = clock.now
+            clock.advance(.5)
+            captures.append((triggered, clock.now))
+            return [.1], 16000
+        ns['voice_input'].read_command.side_effect = read_command
+        playback_elapsed = []
+        def play(filename, *, label, triggered_at, capture_ready_at):
+            self.assertEqual((triggered_at, capture_ready_at), captures[-1])
+            playback_elapsed.append((label, clock.now - triggered_at))
+            clock.advance(.6)
+        ns['play_audio'].side_effect = play
+        with self.assertRaises(SystemExit):
+            run()
+        self.assertEqual([label for label, _ in playback_elapsed], ['acknowledgment', 'reply', 'reply'])
+        for (_, actual), expected in zip(playback_elapsed, [3.5, 6.65, 3.8]):
+            self.assertAlmostEqual(actual, expected)
+        messages = [call.args[0] % call.args[1:] for call in ns['logger'].info.call_args_list]
+        for expected in ('Timing: query transcription 1.000s.',
+                         'Timing: initial LLM response 2.000s.',
+                         'Timing: external request calendar_next_event 0.250s.',
+                         'Timing: follow-up LLM response 2.000s.',
+                         'Timing: voice synthesis 0.300s.'):
+            self.assertIn(expected, messages)
+        self.assertEqual(messages.count('Timing: query transcription 1.000s.'), 2)
+        self.assertFalse(ns['DEBUG_ON'])
+        self.assertFalse(ns['DEBUG_PLAYBACK'])
+        self.assertNotIn('last_command.wav', [call.args[0] for call in ns['sf'].write.call_args_list])
+
+
+class PlaybackTimingTests(unittest.TestCase):
+    def test_start_is_logged_after_stream_open_and_before_waiting_for_audio(self):
+        clock = SimulatedClock()
+        clock.now = 10.
+        audio = Mock()
+        audio.high_pass_filter.return_value = audio
+        audio.export.side_effect = lambda *a, **kw: clock.advance(.2)
+        sd, logger = Mock(), Mock()
+        ns = {'time': clock, 'logger': logger, 'sd': sd, 'np': np, 'io': __import__('io'),
+              'HI_PASS_FREQ': 0, 'AudioSegment': Mock(), 'sf': Mock(),
+              'get_default_device': lambda kind: (None, 16000)}
+        ns['AudioSegment'].from_file.return_value = audio
+        ns['sf'].read.return_value = (np.ones((16000, 1), dtype=np.float32), 16000)
+        def start(*args, **kwargs):
+            logger.info.assert_not_called()
+            clock.advance(.1)
+        sd.play.side_effect = start
+        def wait():
+            messages = [call.args[0] % call.args[1:] for call in logger.info.call_args_list]
+            self.assertIn('Timing: reply playback started; preparation 0.200s, stream startup 0.100s, audio duration 1.000s.', messages)
+            self.assertIn('Timing: trigger to reply playback start 5.300s.', messages)
+            self.assertIn('Timing: capture ready to reply playback start 4.300s.', messages)
+            clock.advance(1.)
+        sd.wait.side_effect = wait
+        play = load_hal_function('play_audio', ns)
+        play('fixture.wav', label='reply', triggered_at=5., capture_ready_at=6.)
+        self.assertEqual(logger.info.call_args.args[0] % logger.info.call_args.args[1:],
+                         'Timing: reply playback finished; stream wait 1.000s.')
 
 
 if __name__ == '__main__':

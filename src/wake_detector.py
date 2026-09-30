@@ -13,7 +13,7 @@ def matches_wake(text):
 
 class WhisperWakeDetector:
     def __init__(self, names=('base.en',), threads=2, max_gain_db=24,
-                 normalization='capped', directory=None):
+                 normalization='capped', directory=None, beam_size=2):
         from faster_whisper import WhisperModel
         from faster_whisper.vad import VadOptions, get_speech_timestamps
         self.get_speech_timestamps = get_speech_timestamps
@@ -23,11 +23,12 @@ class WhisperWakeDetector:
                                  min_silence_duration_ms=100, speech_pad_ms=0)
         self.normalization = normalization
         self.max_gain_db = max_gain_db
+        self.beam_size = beam_size
         self.models = {}
         for name in names:
             model = WhisperModel(str(model_path(name, directory)), device='cpu',
                                  compute_type='int8', cpu_threads=threads, local_files_only=True)
-            list(model.transcribe(np.zeros(RATE, np.float32), language='en', beam_size=5,
+            list(model.transcribe(np.zeros(RATE, np.float32), language='en', beam_size=self.beam_size,
                  temperature=0, condition_on_previous_text=False, vad_filter=False)[0])
             self.models[name] = model
         get_speech_timestamps(np.zeros(RATE, np.float32), self.wake_vad)
@@ -48,7 +49,7 @@ class WhisperWakeDetector:
         result['gain_db'] = float(gain)
         if self.get_speech_timestamps(x, self.wake_vad):
             for name, model in self.models.items():
-                segments, _ = model.transcribe(x, language='en', beam_size=5,
+                segments, _ = model.transcribe(x, language='en', beam_size=self.beam_size,
                     temperature=0, condition_on_previous_text=False, vad_filter=False,
                     initial_prompt=None, hotwords=None)
                 parts = [s.text.strip() for s in segments]

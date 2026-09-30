@@ -188,13 +188,21 @@ restart HAL. Leave it unset or set `DEBUG_PLAYBACK=False` for normal use.
 `DEBUG_ON=True` still saves `last_command.wav` for inspection; enabling
 `DEBUG_PLAYBACK` also saves that file even if general debugging is off.
 
-The tested defaults require no new `.env` entries. Available settings:
+No new `.env` entries are required. Wake decoding now defaults to beam size 2
+to reduce search work. It retained all 13 saved wake detections in Linux replay;
+beam size 1 retained only 11. Keep the same model and phrases while testing this
+setting; set `WAKE_BEAM_SIZE=5` and restart to compare with the previous decoding
+behavior. `WAKE_BEAM_SIZE=1` is available for experiments, with that observed
+accuracy tradeoff. Speed and detection accuracy still need a live Pi comparison.
+
+Available settings:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `WAKE_ENABLED` | `true` | Enable local wake detection |
 | `WAKE_MODELS` | `base.en` | `base.en`, `tiny.en`, or both separated by spaces/commas |
 | `WAKE_THREADS` | `2` | Wake model CPU threads |
+| `WAKE_BEAM_SIZE` | `2` | Wake decoding search width, integer 1–10; previous setting was 5 |
 | `HAL_INPUT_LATENCY_SECONDS` | `0.25` | Requested input buffering headroom, 0.02–2 seconds |
 | `WAKE_WINDOW_SECONDS` | `3` | Length of each rolling window |
 | `WAKE_HOP_SECONDS` | `0.75` | Minimum interval between scan endpoints |
@@ -210,21 +218,48 @@ from the repository root, then start HAL normally. `WAKE_MODELS="tiny.en base.en
 processing. Query transcription remains controlled by `TRANSCRIPTION_BACKEND`
 and `WHISPER_MODEL_NAME`.
 
+With `TRANSCRIPTION_BACKEND=api`, queries use `gpt-4o-mini-transcribe`;
+`WHISPER_MODEL_NAME` only selects the model when the backend is `local`.
+Startup logs identify both the local wake model/beam size and the actual query
+transcription backend/model, so the two paths can be distinguished in timing runs.
+
 INFO logs show microphone selection, the wake model, per-detection processing
 time, capture duration, and skipped scan slots. A scan's processing time is
 not total delay from the spoken wake phrase. On a slower Pi, skipped windows
 can still cause misses; Pi performance needs an actual device run.
 
+Lines beginning `Timing:` are logged at INFO, including with `DEBUG_ON=False`.
+They appear in the console and the normal log file, without going to the display
+panel. They measure query audio preparation, transcription (including upload and
+network wait in API mode), each LLM request, each external request, voice
+synthesis, reply normalization, and playback preparation/start/finish. The
+acknowledgment clip, final reply, and optional debug query playback have separate
+labels. All durations use the monotonic performance clock.
+
+Trigger-to-playback time begins at the LED trigger callback; capture-ready time
+begins after the microphone has closed. These totals exclude the earlier wake
+scan and waiting for the user. Playback start is measured just after the audio
+output stream is started, not when sound physically reaches the speaker. The
+finish line includes the time spent playing the reply, which is not response
+latency. DEBUG_ON can remain off for timing tests; turn it on to save the latest
+query as `last_command.wav`. Keep `DEBUG_PLAYBACK=False` when measuring normal
+response time.
+
 ## Validation
 
-The standalone Mac live run produced 13 detections and 13 complete command
+The earlier beam-5 standalone Mac live run produced 13 detections and 13 complete command
 transcriptions with no microphone overflows. The user reported no missed
 attempts or deliberate-background triggers. Median wake-decision processing
 was about 0.61 seconds, and median existing query transcription about 0.59
 seconds. This short session does not establish long-term reliability.
 
-The integrated detector also matched all 13 saved trigger windows in Linux
-replay. Hardware-free checks cover buffer wrapping and loss detection,
+On the same 13 saved trigger windows in Linux replay, beam sizes 5 and 2 both
+matched 13/13; beam size 1 matched 11/13. Median scan time was 0.648 seconds for
+beam 5 and 0.584 seconds for beam 2 in this comparison (about 10% faster). This
+small replay covers previously detected windows; it does not establish live
+recall or false-activation rates, and its timing is not a Pi benchmark.
+
+Hardware-free checks cover buffer wrapping and loss detection,
 resampling, phrase boundaries, overflow discard/recovery, graceful reader shutdown,
 press/release capture, missing-model fallback, full utterance buffering, and
 spacebar priority during slow inference. Run them with:
@@ -237,10 +272,14 @@ python -m unittest discover -s tests -p test_icloud_auth.py -v
 
 Additional tests cover physical-microphone preference, explicit input overrides,
 credit exhaustion versus temporary rate limits, history preservation, and the
-actual HAL loop returning to listening after a service failure. API tests use
+actual HAL loop returning to listening after a service failure. Decoding checks
+cover beam sizes 1, 2, and 5 during warmup and live analysis. Simulated timings
+verify that stage measurements exclude idle listening, reset for each request,
+and record playback start before waiting for playback to finish. API tests use
 the existing OpenAI SDK with a mock HTTP transport; they need no API key or credits.
 
-The new shutdown order is verified with an instrumented blocking stream;
-native Mac shutdown and full HAL operation on the Pi still need device testing.
+The shutdown order is verified with an instrumented blocking stream. The user's
+latest Pi run completed three requests with no input overflows after increasing
+the input buffer. The new beam setting and timing logs still need a live Pi run.
 The existing query transcription, LLM, iCloud, and TTS integrations are not
 replaced. Live test audio/transcripts are not included in this repository.
