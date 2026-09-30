@@ -112,6 +112,43 @@ See the [Luna model page](https://developers.openai.com/api/docs/models/gpt-6-lu
 and [GPT-6 migration guidance](https://developers.openai.com/api/docs/guides/latest-model).
 Use an account with access to the model and available API credits.
 
+### Testing Luna Fast mode
+
+To request Fast mode for HAL's LLM calls, add this to the existing `.env`
+and restart HAL:
+
+```dotenv
+LLM_SERVICE_TIER=fast
+```
+
+The model stays `gpt-6-luna`, with reasoning disabled. The setting applies to
+both the initial reply and follow-up replies after calendar/weather requests.
+Query transcription has its own API client and is unaffected. For a comparison,
+keep `TRANSCRIPTION_BACKEND=api`, `WAKE_MODELS=tiny.en`, and `WAKE_BEAM_SIZE=5`.
+
+HAL sends the API's equivalent `priority` value, which is supported by the
+existing pinned OpenAI SDK; no package upgrade is needed. Each completed LLM
+request logs the requested and actual service tiers at INFO, independently of
+`DEBUG_ON`. `used=fast` or `used=priority` confirms Fast processing;
+`used=default` means standard processing, and `used=not reported` means the
+response did not identify its tier. HAL does not silently retry on a different
+tier if the API rejects the request.
+
+Compare the `Timing: initial LLM response` and `Timing: follow-up LLM response`
+lines across repeated similar queries. Faster LLM processing may reduce the
+response delay, but wake detection, recording, transcription, and audio playback
+still contribute to the total.
+
+As of September 30, 2026, Luna Fast mode costs twice its standard token rates.
+See the [Fast mode guide](https://developers.openai.com/api/docs/guides/fast-mode)
+and [Luna pricing](https://developers.openai.com/api/docs/models/gpt-6-luna).
+To explicitly return to standard processing, set `LLM_SERVICE_TIER=default`
+and restart. Leaving the setting absent or blank preserves the API's project
+default, as before; `auto` also uses the project setting. A project configured
+for Fast mode may therefore still use Fast when the setting is absent.
+
+### Listing available models
+
 To list model IDs returned by the API for HAL's key, run this from `src` in the
 same Python environment used for HAL. It searches for `.env` from the current
 directory upward and prints model IDs without displaying the key:

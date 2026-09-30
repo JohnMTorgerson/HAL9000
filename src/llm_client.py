@@ -1,3 +1,4 @@
+import logging
 import subprocess
 from datetime import datetime
 from hal_persona_prompt import prompt as HAL_PERSONA_PROMPT
@@ -32,6 +33,9 @@ def _openai_service_error(error):
         message = 'OpenAI is temporarily rate limiting requests. Please wait before asking again.'
     elif status == 401:
         message = 'OpenAI rejected the API key. Check OPENAI_API_KEY and restart HAL.'
+    elif status in (400, 403, 404) and getattr(error, 'param', None) == 'service_tier':
+        message = ('OpenAI rejected LLM_SERVICE_TIER. Check service tier access for this '
+                   'model and project, or set LLM_SERVICE_TIER=default and restart HAL.')
     elif status in (403, 404):
         message = 'OpenAI denied access to the requested resource. Check LLM_MODEL and API key permissions.'
     elif isinstance(error, APITimeoutError):
@@ -50,13 +54,18 @@ def get_hal_system_message():
 
 
 class LLMClient:
-    def __init__(self, backend, model_name, max_history=6, openai_api_key=None):
+    def __init__(self, backend, model_name, max_history=6, openai_api_key=None,
+                 service_tier=None, logger=None):
         self.backend = backend
         self.model_name = model_name
         self.max_history = max_history
         self.chat_history = []
+        self.logger = logger if logger is not None else logging.getLogger('HAL')
 
         if backend == "openai":
+            self.service_tier = (service_tier or '').strip().lower() or None
+            if self.service_tier not in (None, 'auto', 'default', 'fast', 'priority'):
+                raise ValueError('LLM_SERVICE_TIER must be auto, default, fast, or priority.')
             if OpenAI is None:
                 raise ImportError("OpenAI package not found. Please install openai>=1.0.0")
             if not openai_api_key:
@@ -64,6 +73,8 @@ class LLMClient:
             # A billing failure cannot recover through retries. Make one attempt
             # per request and return control to the listener on service errors.
             self.client = OpenAI(api_key=openai_api_key, max_retries=0)
+            self.logger.info('LLM ready: %s; requested service tier: %s.',
+                             self.model_name, self.service_tier or 'auto (project default)')
 
     def _get_timestamp(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -79,6 +90,11 @@ class LLMClient:
             system_message = get_hal_system_message()
             messages = [system_message] + history
             options = {}
+            if self.service_tier is not None:
+                # OpenAI accepts both names for Fast mode. The priority alias
+                # is also supported by HAL's pinned OpenAI 1.99.9 SDK.
+                options['service_tier'] = ('priority' if self.service_tier == 'fast'
+                                           else self.service_tier)
             if self.model_name == 'gpt-6-luna':
                 # Preserve HAL's quick, non-reasoning replies and small output
                 # budget. Luna's default medium reasoning rejects temperature.
@@ -94,6 +110,11 @@ class LLMClient:
                 )
             except OPENAI_ERRORS as exc:
                 raise _openai_service_error(exc) from exc
+            # The server may serve a different tier than requested. Record its
+            # actual response, including when the SDK/server omits the field.
+            self.logger.info('LLM service tier: requested=%s; used=%s.',
+                             self.service_tier or 'auto (project default)',
+                             getattr(response, 'service_tier', None) or 'not reported')
             reply = response.choices[0].message.content.strip()
 
             # Append assistant reply

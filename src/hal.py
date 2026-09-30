@@ -145,7 +145,9 @@ if LLM_BACKEND == "openai":
         backend="openai",
         model_name=os.getenv("LLM_MODEL"),
         max_history=int(os.getenv("LLM_MAX_HISTORY")),
-        openai_api_key=os.getenv("OPENAI_API_KEY")
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        service_tier=os.getenv("LLM_SERVICE_TIER"),
+        logger=logger,
     )
 elif LLM_BACKEND == "ollama":
     llm = LLMClient(

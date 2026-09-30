@@ -72,29 +72,97 @@ class DeviceTests(unittest.TestCase):
                     choose_input_device(devices, default_input=0)
 
 
-def error_response(status, code, error_type='server_error'):
+def error_response(status, code, error_type='server_error', param=None):
     return httpx.Response(status, json={'error': {
         'message': 'This raw server message must not become a HAL reply.',
-        'type': error_type, 'param': None, 'code': code}})
+        'type': error_type, 'param': param, 'code': code}})
 
 
-def successful_response():
-    return httpx.Response(200, json={
+def successful_response(service_tier=None):
+    body = {
         'id': 'chatcmpl-test', 'object': 'chat.completion', 'created': 0,
         'model': 'test-model', 'choices': [{'index': 0, 'finish_reason': 'stop',
-            'message': {'role': 'assistant', 'content': 'I am ready.'}}]})
+            'message': {'role': 'assistant', 'content': 'I am ready.'}}]}
+    if service_tier is not None:
+        body['service_tier'] = service_tier
+    return httpx.Response(200, json=body)
 
 
 class LLMTests(unittest.TestCase):
-    def make_client(self, handler):
+    def make_client(self, handler, model_name='test-model', **options):
         http_client = httpx.Client(transport=httpx.MockTransport(handler))
         self.addCleanup(http_client.close)
         with patch('llm_client.OpenAI', side_effect=lambda **kwargs:
                    OpenAI(http_client=http_client, **kwargs)):
-            client = LLMClient('openai', 'test-model', max_history=2,
-                               openai_api_key='test-placeholder-not-a-real-key')
+            client = LLMClient('openai', model_name, max_history=2,
+                               openai_api_key='test-placeholder-not-a-real-key', **options)
         self.addCleanup(client.client.close)
         return client
+
+    def test_fast_applies_to_initial_and_external_followup_with_reasoning_disabled(self):
+        requests = []
+        def handler(request):
+            requests.append(json.loads(request.content))
+            return successful_response('priority' if len(requests) == 1 else 'fast')
+        client = self.make_client(handler, model_name='gpt-6-luna', service_tier='fast')
+        with self.assertLogs('HAL', level='INFO') as logs:
+            client.get_response('What is next on my calendar?')
+            client.get_response('[EXTERNAL_API_RESPONSE] {"title": "fixture event"}')
+        self.assertEqual(len(requests), 2)
+        for request in requests:
+            self.assertEqual(request['service_tier'], 'priority')
+            self.assertEqual(request['model'], 'gpt-6-luna')
+            self.assertEqual(request['reasoning_effort'], 'none')
+            self.assertEqual(request['max_completion_tokens'], 512)
+        self.assertIn('requested=fast; used=priority', logs.output[0])
+        self.assertIn('requested=fast; used=fast', logs.output[1])
+
+    def test_tier_can_be_omitted_or_explicitly_set_to_standard(self):
+        for setting, expected in [(None, None), ('', None), ('auto', 'auto'),
+                                  ('default', 'default'), ('priority', 'priority'),
+                                  (' FaSt ', 'priority')]:
+            with self.subTest(setting=setting):
+                requests = []
+                def handler(request):
+                    requests.append(json.loads(request.content))
+                    return successful_response()
+                client = self.make_client(handler, service_tier=setting)
+                client.get_response('hello')
+                if expected is None:
+                    self.assertNotIn('service_tier', requests[0])
+                else:
+                    self.assertEqual(requests[0]['service_tier'], expected)
+
+    def test_logs_report_actual_downgrade_or_missing_tier(self):
+        for actual, expected in [('default', 'default'), (None, 'not reported')]:
+            with self.subTest(actual=actual):
+                client = self.make_client(lambda request: successful_response(actual),
+                                          service_tier='fast')
+                with self.assertLogs('HAL', level='INFO') as logs:
+                    client.get_response('hello')
+                self.assertIn(f'requested=fast; used={expected}', logs.output[0])
+
+    def test_invalid_tier_fails_before_creating_api_client(self):
+        with patch('llm_client.OpenAI') as create_client:
+            with self.assertRaisesRegex(ValueError, 'LLM_SERVICE_TIER'):
+                LLMClient('openai', 'gpt-6-luna', service_tier='fats',
+                          openai_api_key='test-placeholder-not-a-real-key')
+            create_client.assert_not_called()
+
+    def test_rejected_tier_is_actionable_without_retry_or_history_change(self):
+        for status in (400, 403):
+            with self.subTest(status=status):
+                requests = []
+                def handler(request):
+                    requests.append(json.loads(request.content))
+                    return error_response(status, 'invalid_value', 'invalid_request_error',
+                                          param='service_tier')
+                client = self.make_client(handler, service_tier='fast')
+                with self.assertRaisesRegex(LLMServiceError, 'LLM_SERVICE_TIER=default') as caught:
+                    client.get_response('hello')
+                self.assertNotIn('raw server message', str(caught.exception))
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(client.chat_history, [])
 
     def test_credit_failure_is_not_retried_and_history_recovers(self):
         requests = []
