@@ -254,7 +254,8 @@ class VoiceInput:
                     on_trigger('wakeword')
                     self.logger.info('Wake detected by %s in %.3fs; skipped scan slots: %s.',
                                      ', '.join(decision['models']), decision['seconds'], skipped)
-                    self.logger.debug('Wake transcript: %s', decision['transcripts'])
+                    self.logger.debug('Wake transcript: %s', decision['transcripts'],
+                                      extra={'speech_role': 'user'})
                 elif decision['seconds'] > settings.hop:
                     self.logger.debug('Wake scan took %.3fs (interval %.3fs); next scan uses latest audio.',
                                       decision['seconds'], settings.hop)

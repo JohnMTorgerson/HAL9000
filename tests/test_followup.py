@@ -361,6 +361,12 @@ class MainLoopTests(unittest.TestCase):
         self.assertFalse(any('Bob' in text or 'That is all' in text for text in displayed))
         self.assertFalse(any('decision' in text or 'BACKGROUND' in text for text in displayed))
         self.assertIn('USER: What about tomorrow?', displayed)
+        heard = [call.args[1] for call in ns['logger'].info.call_args_list
+                 if call.args[0] == 'FOLLOWUP heard: %s']
+        self.assertEqual(heard, ['Bob, pass the remote.', 'What about tomorrow?', 'That is all, HAL.'])
+        for call in ns['logger'].info.call_args_list:
+            if call.args[0] == 'FOLLOWUP heard: %s':
+                self.assertEqual(call.kwargs['extra'], {'speech_role': 'user'})
 
     def test_direct_wake_in_followup_is_signalled_to_luna_and_resets_session_after_reply(self):
         ns, run, clock = self.fixture()

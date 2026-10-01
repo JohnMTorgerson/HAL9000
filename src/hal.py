@@ -18,6 +18,7 @@ from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
+from speech_logging import SpeechFormatter
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -72,7 +73,8 @@ logging.Logger.display = log_display  # e.g., logger.display("…")
 
 logger = logging.getLogger('HAL')
 logger.setLevel(logging.DEBUG)
-formatter = logging.Formatter("%(asctime)s %(name)s.%(funcName)s() line %(lineno)s %(levelname).5s :: %(message)s")
+LOG_FORMAT = "%(asctime)s %(name)s.%(funcName)s() line %(lineno)s %(levelname).5s :: %(message)s"
+formatter = logging.Formatter(LOG_FORMAT)
 # log to file at INFO level
 file_handler = logging.FileHandler(os.path.abspath(f"{os.environ['LOG_PATH']}/log.log"))
 file_handler.setLevel(logging.INFO)
@@ -86,7 +88,7 @@ logger.addHandler(error_file_handler)
 # log to console at DEBUG level
 stream_handler = logging.StreamHandler(sys.stdout)
 stream_handler.setLevel(logging.DEBUG)
-stream_handler.setFormatter(formatter)
+stream_handler.setFormatter(SpeechFormatter(LOG_FORMAT, stream=stream_handler.stream))
 logger.addHandler(stream_handler)
 
 # STREAM CLEAN LOGS TO THE DISPLAY (bottom panel)
@@ -258,6 +260,10 @@ def run():
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
             if trigger_kind == 'followup':
+                # Record every candidate before classification, including
+                # ignored/end speech and requests whose classification fails.
+                # INFO stays in the log file/terminal, below the display level.
+                logger.info('FOLLOWUP heard: %s', user_input, extra={'speech_role': 'user'})
                 explicit = explicitly_addresses_hal(user_input)
                 decision = llm.get_followup_response(user_input, explicitly_addressed=explicit)
                 logger.info('Timing: follow-up decision and response %.3fs; decision=%s.',
@@ -271,9 +277,9 @@ def run():
                         logger.info('Follow-up ignored; the existing deadline is unchanged.')
                     continue
                 hal_reply = decision.reply
-                logger.display(f"USER: {user_input}")
+                logger.display(f"USER: {user_input}", extra={'speech_role': 'user'})
             else:
-                logger.display(f"USER: {user_input}")
+                logger.display(f"USER: {user_input}", extra={'speech_role': 'user'})
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(user_input)
             logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
@@ -294,7 +300,7 @@ def run():
 
             # keep handling API calls until HAL gives a final answer
             while hal_reply.startswith("[EXTERNAL_API_CALL]"):
-                logger.display("HAL: Just a moment...")
+                logger.display("HAL: Just a moment...", extra={'speech_role': 'hal'})
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
                            triggered_at=triggered_at, capture_ready_at=capture_ready_at,
                            speech_ended_at=speech_ended_at)
@@ -324,7 +330,7 @@ def run():
                 logger.debug(f"Post-processed HAL reply:\nBEFORE: {hal_reply}\nAFTER : {filtered_reply}")
             hal_reply = filtered_reply
 
-            logger.display(f"HAL: {hal_reply}")
+            logger.display(f"HAL: {hal_reply}", extra={'speech_role': 'hal'})
 
             # create audio from response text and save to file
             stage_started = time.perf_counter()

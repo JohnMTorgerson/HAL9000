@@ -240,7 +240,19 @@ even if some background speech is accepted by mistake.
 Silence is processed locally and makes no transcription or LLM request. Speech
 that is ultimately ignored can still incur API transcription and classification
 charges. INFO logs identify the open window, `respond`/`ignore`/`end` decisions,
-their timing, and window expiry. Debug playback is skipped for automatic
+their timing, and window expiry. `FOLLOWUP heard:` records every candidate's
+full transcript before classification, including speech later ignored or ending
+the conversation, and candidates whose classification fails. These lines appear
+in the terminal and `log.log` even with `DEBUG_ON=False`; they do not appear on
+HAL's display unless accepted as a normal user request.
+
+In an interactive terminal, user transcripts (including wake and follow-up
+transcripts) are cyan, and HAL's spoken replies are green. Saved logs and HAL's
+display remain plain text. Color is disabled for redirected output, `TERM=dumb`,
+or a nonempty `NO_COLOR` environment variable (for example,
+`NO_COLOR=1 python hal.py`). No debug setting is required for color.
+
+Debug playback is skipped for automatic
 follow-up candidates, so it cannot repeat background speech aloud. Existing
 `DEBUG_ON`/`DEBUG_PLAYBACK` recording settings can still save that candidate to
 `last_command.wav`. To disable the feature, set `FOLLOWUP_ENABLED=false` and
