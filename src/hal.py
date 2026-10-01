@@ -17,6 +17,7 @@ from llm_client import LLMClient, LLMServiceError
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError
+from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -139,7 +140,9 @@ if stt.mode == 'live':
     logger.info('Live transcription delay: %s; static API fallback: %s.',
                 stt.live_settings.delay, 'enabled' if stt.fallback else 'disabled')
 # The detector is local and lightweight; query transcription still uses stt above.
-voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_device("input")[0])
+followup_settings = FollowupSettings.from_env()
+voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_device("input")[0],
+                                 followup_enabled=followup_settings.enabled)
 
 # ------------------------------------------------------------
 # LLM Configuration
@@ -164,6 +167,12 @@ else:
     llm = None
     raise ValueError(f"Unknown LLM Backend: {LLM_BACKEND}")
 
+if followup_settings.enabled and LLM_BACKEND != 'openai':
+    raise ValueError('FOLLOWUP_ENABLED requires LLM_BACKEND=openai with structured-output support.')
+logger.info('Follow-up listening: %s; window %.1fs; session limit %.1fs.',
+            'enabled' if followup_settings.enabled else 'disabled',
+            followup_settings.window, followup_settings.session_limit)
+
 # ------------------------------------------------------------
 # Get LED if on raspberry pi, dummy if not
 # ------------------------------------------------------------
@@ -174,6 +183,7 @@ led = get_led()
 # ------------------------------------------------------------
 def run():
     logger.info("========================= HAL 9000 is now online.\n")
+    followups = FollowupSession(followup_settings, clock=time.perf_counter)
 
     # start or connect to display server
     display_mgr = DisplayServerManager(
@@ -186,21 +196,33 @@ def run():
         live_stream = None
         try:
             triggered_at = None
+            trigger_kind = None
             # Capture continues while the wake detector processes its rolling window.
             # Live transcription can overlap capture. The microphone still
             # closes before any query reaches the LLM or HAL starts speaking.
             def on_trigger(kind):
-                nonlocal triggered_at
+                nonlocal triggered_at, trigger_kind
                 triggered_at = time.perf_counter()
+                trigger_kind = kind
                 logger.info("====================================================================")
-                logger.info("Detected %s command: lighting LED", kind)
+                if kind == 'followup':
+                    logger.info('Possible follow-up speech: lighting LED; intent not yet confirmed.')
+                else:
+                    logger.info("Detected %s command: lighting LED", kind)
                 led.on()
 
+            capture_options = {'on_trigger': on_trigger}
+            deadline = followups.deadline()
+            if deadline is not None:
+                capture_options['followup_deadline'] = deadline
             if stt.mode == 'live':
                 live_stream = stt.create_live_stream()
-                audio, fs = voice_input.read_command(on_trigger=on_trigger, audio_stream=live_stream)
-            else:
-                audio, fs = voice_input.read_command(on_trigger=on_trigger)
+                capture_options['audio_stream'] = live_stream
+            captured = voice_input.read_command(**capture_options)
+            if captured is None:
+                followups.close()
+                continue
+            audio, fs = captured
             capture_ready_at = time.perf_counter()
             speech_ended_at = voice_input.last_speech_end_at
             if triggered_at is not None:
@@ -219,7 +241,7 @@ def run():
                 sf.write("last_command.wav", audio, fs)
                 logger.debug("Saved last command to last_command.wav")
             logger.info('Timing: query audio preparation %.3fs.', time.perf_counter() - stage_started)
-            if DEBUG_PLAYBACK:
+            if DEBUG_PLAYBACK and trigger_kind != 'followup':
                 logger.debug("DEBUG_PLAYBACK enabled – playing last command...")
                 play_audio("last_command.wav", label='debug query')
 
@@ -232,11 +254,28 @@ def run():
             else:
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
-            logger.display(f"USER: {user_input}")
-
             # get HAL's response from LLM
             stage_started = time.perf_counter()
-            hal_reply = llm.get_response(user_input)
+            explicit = trigger_kind in ('wakeword', 'spacebar')
+            if trigger_kind == 'followup':
+                explicit = explicitly_addresses_hal(user_input)
+                decision = llm.get_followup_response(user_input, explicitly_addressed=explicit)
+                logger.info('Timing: follow-up decision and response %.3fs; decision=%s.',
+                            time.perf_counter() - stage_started, decision.decision)
+                if decision.decision != 'respond':
+                    led.off()
+                    if decision.decision == 'end':
+                        followups.close()
+                        logger.info('Follow-up session ended; wake phrase or spacebar required again.')
+                    else:
+                        logger.info('Follow-up ignored; the existing deadline is unchanged.')
+                    continue
+                hal_reply = decision.reply
+                logger.display(f"USER: {user_input}")
+            else:
+                logger.display(f"USER: {user_input}")
+                stage_started = time.perf_counter()
+                hal_reply = llm.get_response(user_input)
             logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
@@ -303,24 +342,29 @@ def run():
             # play audio of HAL's response from normalized file
             play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
                        capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at)
+            # Never open a window after "Just a moment" or while HAL speaks.
+            followups.after_response(explicit=explicit)
 
             #turn LED off
             logger.info("Turning LED off")
             led.off()
 
         except AudioOverflowError as exc:
+            followups.close()
             led.off()
             logger.warning('%s Reopening microphone.', exc)
             logger.display('HAL: Microphone audio was lost. Please repeat your request when listening resumes.')
             time.sleep(.5)
             continue
         except CommandTooLongError as exc:
+            followups.close()
             logger.warning("%s", exc)
             logger.display("That request was too long. Please try a shorter request.")
             led.off()
             continue
 
         except (LLMServiceError, TranscriptionError) as exc:
+            followups.close()
             led.off()
             logger.error("%s", exc)
             logger.display(f"HAL: {exc}")
@@ -328,12 +372,14 @@ def run():
             continue
 
         except KeyboardInterrupt:
+            followups.close()
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
             display_mgr.stop()
             led.off()
             sys.exit(0)
 
         except Exception:
+            followups.close()
             display_mgr.stop()
             led.off()
             raise

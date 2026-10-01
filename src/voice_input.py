@@ -56,17 +56,19 @@ class VoiceSettings:
 
 class VoiceInput:
     def __init__(self, settings, logger, detector=None, device_selector=lambda: None,
-                 capture_factory=MicrophoneCapture, keyboard_factory=SpacebarTrigger):
+                 capture_factory=MicrophoneCapture, keyboard_factory=SpacebarTrigger,
+                 speech_detector=None):
         self.settings = settings
         self.logger = logger
         self.detector = detector
+        self.speech_detector = speech_detector if speech_detector is not None else detector
         self.device_selector = device_selector
         self.capture_factory = capture_factory
         self.keyboard_factory = keyboard_factory
         self.last_speech_end_at = None
 
     @classmethod
-    def from_env(cls, logger, device_selector=lambda: None):
+    def from_env(cls, logger, device_selector=lambda: None, followup_enabled=False):
         settings = VoiceSettings.from_env()
         detector = None
         if settings.enabled:
@@ -82,11 +84,25 @@ class VoiceInput:
                                  'python -m pip install -r src/requirements-wake.txt, then python src/setup_wake.py.')
         else:
             logger.info('Wake detection disabled by WAKE_ENABLED; spacebar mode only.')
-        return cls(settings, logger, detector, device_selector)
+        speech_detector = detector
+        if followup_enabled and speech_detector is None:
+            try:
+                from wake_detector import SpeechActivityDetector
+                speech_detector = SpeechActivityDetector()
+            except Exception:
+                logger.exception('Follow-up speech detector unavailable; explicit triggers remain usable.')
+        return cls(settings, logger, detector, device_selector, speech_detector=speech_detector)
 
-    def read_command(self, on_trigger=lambda kind: None, audio_stream=None):
+    def read_command(self, on_trigger=lambda kind: None, audio_stream=None, followup_deadline=None):
+        """Return audio, or None when a follow-up window expires without speech."""
         settings = self.settings
         self.last_speech_end_at = None
+        if followup_deadline is not None:
+            if self.speech_detector is None:
+                self.logger.warning('Follow-up listening unavailable without local speech detection.')
+                return None
+            if time.perf_counter() >= followup_deadline:
+                return None
         device = os.getenv('HAL_INPUT_DEVICE')
         if device:
             device = int(device) if device.isdigit() else device
@@ -101,7 +117,7 @@ class VoiceInput:
         try:
             capture.start()
             keys.start()
-            if self.detector is None and not keys.available:
+            if self.detector is None and not keys.available and followup_deadline is None:
                 raise RuntimeError('Neither wake detection nor a spacebar listener is available. Check startup errors.')
             history = capture.history
             rate = capture.rate
@@ -111,23 +127,53 @@ class VoiceInput:
             skipped = 0
             active = None
             last_endpoint = 0
+            last_followup_scan = 0
+            input_latency = getattr(capture, 'latency', settings.input_latency)
             self.logger.info('Listening on %s (%s Hz) for %s.', capture.device_name, rate,
+                             'follow-up speech or spacebar' if followup_deadline is not None else
                              'Hey HAL or spacebar' if self.detector else 'spacebar')
             self.logger.info('Microphone input latency: %.3fs (requested %.3fs).',
                              getattr(capture, 'latency', settings.input_latency), settings.input_latency)
             self.logger.info('End-of-speech silence: %.2fs; query audio mode: %s.',
                              settings.silence, 'live' if audio_stream is not None else 'static')
+            if followup_deadline is not None:
+                self.logger.info('Follow-up listening: %.2fs remaining; no wake phrase required.',
+                                 max(0., followup_deadline - time.perf_counter()))
             while True:
                 capture.check()
                 total, _ = history.position()
                 pressed, released = keys.snapshot()
-                if active is None and pressed is not None:
+                if pressed is not None and (active is None or active['kind'] == 'followup'):
                     # Both key events are watched before inference starts, so a
                     # short press/release during decoding cannot strand recording.
                     start = max(0, history.sample_at(pressed) - round(.15 * rate))
+                    if active is not None:
+                        start = min(start, active['start'])
                     active = {'kind': 'spacebar', 'start': start, 'detected': total}
                     on_trigger('spacebar')
                     self.logger.info('Push-to-talk triggered; record until spacebar release.')
+                if active is None and followup_deadline is not None:
+                    if total - last_followup_scan >= round(.1 * rate):
+                        last_followup_scan = total
+                        scan_start = max(0, total - rate)
+                        bounds = self.speech_detector.speech_bounds(
+                            to_audio(history.read(scan_start, total), rate))
+                        if bounds:
+                            onset = scan_start + round(bounds[0] / RATE * rate)
+                            onset_at = history.time_at(onset)
+                            if onset_at is not None and onset_at - input_latency <= followup_deadline:
+                                active = {'kind': 'followup',
+                                          'start': max(0, onset - round(.2 * rate)), 'detected': total}
+                                on_trigger('followup')
+                    if active is None:
+                        # Allow delivery of buffered audio and confirmation of
+                        # speech that STARTED just before the deadline. Later
+                        # onsets cannot extend the window.
+                        if time.perf_counter() >= followup_deadline + input_latency + .2:
+                            self.logger.info('Follow-up window expired; returning to wake listening.')
+                            return None
+                        time.sleep(.02)
+                        continue
                 if active is not None:
                     elapsed = (total - active['start']) / rate
                     end = total
@@ -139,10 +185,10 @@ class VoiceInput:
                         # Keep a short tail after release; capture remains live.
                         if time.perf_counter() - released >= .1:
                             reason = 'spacebar released'
-                    elif active['kind'] == 'wakeword' and total - last_endpoint >= round(.2 * rate):
+                    elif active['kind'] in ('wakeword', 'followup') and total - last_endpoint >= round(.2 * rate):
                         last_endpoint = total
                         audio = to_audio(history.read(active['start'], total), rate)
-                        speech_end = self.detector.last_speech_sample(audio)
+                        speech_end = self.speech_detector.last_speech_sample(audio)
                         speech_sample = (active['start'] + round(speech_end / RATE * rate)
                                          if speech_end is not None else None)
                         last_speech = (active['start'] + round(speech_end / RATE * rate)
@@ -172,8 +218,8 @@ class VoiceInput:
                             raise RuntimeError('No microphone audio captured for this command.')
                         if audio_stream is not None:
                             audio_stream.end_audio()
-                        if active['kind'] == 'spacebar' and self.detector is not None:
-                            speech_end = self.detector.last_speech_sample(audio)
+                        if active['kind'] == 'spacebar' and self.speech_detector is not None:
+                            speech_end = self.speech_detector.last_speech_sample(audio)
                             speech_sample = (active['start'] + round(speech_end / RATE * rate)
                                              if speech_end is not None else None)
                         if speech_sample is not None:

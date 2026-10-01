@@ -165,6 +165,87 @@ PY
 The list includes models for other tasks, such as audio and embeddings; model
 presence alone does not establish Chat Completions compatibility or pricing.
 
+## Optional conversational follow-ups
+
+After an explicit wake or spacebar request, HAL can listen briefly for another
+utterance without requiring the wake phrase again. This feature is off by
+default. Pull the update in your existing HAL environment; no additional
+dependencies or model downloads are needed for an installation with working
+Whisper wake detection.
+
+To enable it, add these entries to your existing `.env` and restart HAL:
+
+```dotenv
+FOLLOWUP_ENABLED=true
+FOLLOWUP_WINDOW_SECONDS=8
+FOLLOWUP_SESSION_SECONDS=120
+```
+
+Keep `TRANSCRIPTION_MODE=static` and your working transcription, wake, and Luna
+settings. Follow-up listening uses local speech detection, without running the
+Whisper wake decoder for each utterance in the open window. Captured speech
+goes through the existing query transcriber. The feature requires
+`LLM_BACKEND=openai` and a model supporting structured outputs, such as
+`gpt-6-luna`. It preserves the configured Fast tier and Luna's disabled reasoning.
+
+The window opens after HAL's **final reply finishes playing**, never during his
+voice or after an intermediate “Just a moment.” It lasts eight seconds by
+default, including microphone startup. Speech that starts before the deadline
+can finish afterward, subject to the existing command-length limit. A short
+buffer-delivery allowance accommodates microphone latency at the boundary;
+it does not admit speech starting after the deadline.
+
+Luna receives the candidate transcript and accepted conversation history in one
+combined decision/response request. Its structured result has three outcomes:
+
+| Decision | Behavior |
+| --- | --- |
+| `respond` | Use the normal reply or external-request path; open a new short window after the final spoken reply. |
+| `ignore` | Stay silent, leave the original deadline unchanged, and listen again for any time still remaining. |
+| `end` | Stay silent and close the window immediately; require “Hey HAL” or spacebar again. |
+
+Capturing, transcription, and classification consume time from the existing
+window; ignoring a remark never pauses or renews that timer. Rejected/end
+utterances are excluded from conversation history and the display transcript,
+and cannot trigger TTS, Wikipedia fallback, or calendar/weather requests.
+Malformed, truncated, refused, or failed model decisions close the session and
+report an error without treating the raw output as a reply. No second LLM call
+is made to classify an otherwise accepted follow-up; normal external requests
+still use their existing follow-through call.
+
+The separate session limit starts when HAL finishes replying to an explicit
+wake/spacebar request. Accepted automatic follow-ups cannot extend this limit.
+An utterance already started may finish, but no further automatic window opens
+after the limit. A fresh explicit request starts a new session. During an open
+window, a clear “Hey HAL” in the query transcript tells Luna to treat it as
+directly addressed and resets the session if answered. The ambiguous “hey how”
+variant still works in idle wake detection but does not override the follow-up
+filter by itself. Spacebar retains priority and uses the ordinary unfiltered
+request path. End phrases such as “That's all, HAL” or “Stop listening” can be
+spoken as automatic follow-ups.
+
+Luna is instructed to accept clear continuations, corrections, answers to its
+questions, and assistant-directed changes of subject; uncertain background
+dialogue is ignored. It cannot reliably distinguish identical words spoken by
+you versus a TV character. Test this with your actual room and conversations.
+The session limit prevents automatic replies from extending listening forever
+even if some background speech is accepted by mistake.
+
+| Setting | Default | Accepted values |
+| --- | --- | --- |
+| `FOLLOWUP_ENABLED` | `false` | `true` or `false` |
+| `FOLLOWUP_WINDOW_SECONDS` | `8` | 1–30 seconds |
+| `FOLLOWUP_SESSION_SECONDS` | `120` | At least the window length, up to 600 seconds |
+
+Silence is processed locally and makes no transcription or LLM request. Speech
+that is ultimately ignored can still incur API transcription and classification
+charges. INFO logs identify the open window, `respond`/`ignore`/`end` decisions,
+their timing, and window expiry. Debug playback is skipped for automatic
+follow-up candidates, so it cannot repeat background speech aloud. Existing
+`DEBUG_ON`/`DEBUG_PLAYBACK` recording settings can still save that candidate to
+`last_command.wav`. To disable the feature, set `FOLLOWUP_ENABLED=false` and
+restart; normal wake and spacebar requests continue to work.
+
 ## Optional live query transcription
 
 Live mode sends query audio to OpenAI while the command is still being recorded.
@@ -383,6 +464,7 @@ spacebar priority during slow inference. Run them with:
 python -m unittest discover -s tests -p test_voice_input.py -v
 python -m unittest discover -s tests -p test_hal_recovery.py -v
 python -m unittest discover -s tests -p test_live_transcription.py -v
+python -m unittest discover -s tests -p test_followup.py -v
 python -m unittest discover -s tests -p test_icloud_auth.py -v
 ```
 
@@ -397,6 +479,13 @@ The live suite additionally uses a local WebSocket server with the real transpor
 package. It checks streaming before the endpoint, exact resampling across chunk
 boundaries, committed-item matching, timeout/cancellation, optional fallback,
 and recovery after failed turns. Install `src/requirements-live.txt` to run it.
+
+Follow-up tests cover silence expiry, speech starting just before/after the
+deadline, spacebar priority, bounded session renewal, rejected history, strict
+decision parsing, external-request handling, and returning to wake listening
+after an end or failure. They use simulated microphone input and the installed
+OpenAI SDK with mock responses; they do not measure Luna's real classification
+accuracy or the Pi microphone's speech-onset reliability.
 
 The shutdown order is verified with an instrumented blocking stream. The user's
 Pi runs completed requests without input overflows after increasing the input

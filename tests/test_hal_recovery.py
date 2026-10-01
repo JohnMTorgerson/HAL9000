@@ -20,6 +20,7 @@ from audio_devices import choose_input_device
 from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
 from live_transcription import TranscriptionError
+from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 
 
 def load_hal_function(name, namespace):
@@ -256,6 +257,8 @@ class MainLoopTests(unittest.TestCase):
             'LLMServiceError': LLMServiceError,
             'TranscriptionError': TranscriptionError,
             'AudioOverflowError': AudioOverflowError,
+            'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
+            'explicitly_addresses_hal': explicitly_addresses_hal,
             'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
         })
         namespace['stt'].transcribe.return_value = 'Hey HAL, are you there?'

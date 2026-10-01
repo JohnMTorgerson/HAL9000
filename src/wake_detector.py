@@ -11,16 +11,36 @@ def matches_wake(text):
     words = re.findall(r'[a-z]+', text.casefold())
     return bool(set(zip(words, words[1:])) & ACCEPTED_PAIRS)
 
-class WhisperWakeDetector:
+class SpeechActivityDetector:
+    """Local speech boundaries without loading or running a Whisper decoder."""
+    def __init__(self):
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+        self.get_speech_timestamps = get_speech_timestamps
+        self.end_vad = VadOptions(threshold=.25, min_speech_duration_ms=100,
+                                 min_silence_duration_ms=100, speech_pad_ms=0)
+
+    def speech_bounds(self, audio):
+        x = np.asarray(audio, dtype=np.float32)
+        peak = float(np.max(np.abs(x))) if len(x) else 0
+        if peak <= 1e-4:
+            return None
+        spans = self.get_speech_timestamps(x / peak * .95, self.end_vad)
+        return (spans[0]['start'], spans[-1]['end']) if spans else None
+
+    def last_speech_sample(self, audio):
+        """Endpoint on the full buffered utterance, without trimming quiet words."""
+        bounds = self.speech_bounds(audio)
+        return bounds[1] if bounds else None
+
+
+class WhisperWakeDetector(SpeechActivityDetector):
     def __init__(self, names=('base.en',), threads=2, max_gain_db=24,
                  normalization='capped', directory=None, beam_size=2):
         from faster_whisper import WhisperModel
         from faster_whisper.vad import VadOptions, get_speech_timestamps
-        self.get_speech_timestamps = get_speech_timestamps
+        super().__init__()
         self.wake_vad = VadOptions(threshold=.25, min_speech_duration_ms=100,
                                   min_silence_duration_ms=400, speech_pad_ms=400)
-        self.end_vad = VadOptions(threshold=.25, min_speech_duration_ms=100,
-                                 min_silence_duration_ms=100, speech_pad_ms=0)
         self.normalization = normalization
         self.max_gain_db = max_gain_db
         self.beam_size = beam_size
@@ -59,12 +79,3 @@ class WhisperWakeDetector:
         result['matched'] = bool(result['models'])
         result['seconds'] = time.perf_counter() - started
         return result
-
-    def last_speech_sample(self, audio):
-        """Endpoint on the full buffered utterance, without trimming quiet words."""
-        x = np.asarray(audio, dtype=np.float32)
-        peak = float(np.max(np.abs(x))) if len(x) else 0
-        if peak <= 1e-4:
-            return None
-        spans = self.get_speech_timestamps(x / peak * .95, self.end_vad)
-        return spans[-1]['end'] if spans else None

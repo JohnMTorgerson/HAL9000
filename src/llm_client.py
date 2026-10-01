@@ -2,6 +2,7 @@ import logging
 import subprocess
 from datetime import datetime
 from hal_persona_prompt import prompt as HAL_PERSONA_PROMPT
+from followup import FOLLOWUP_FORMAT, FOLLOWUP_INSTRUCTIONS, FollowupDecision
 
 
 # For OpenAI v1+ usage
@@ -79,45 +80,68 @@ class LLMClient:
     def _get_timestamp(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def get_response(self, user_input):
+    def _history_with(self, user_input):
         # Commit history only after success; a failed request must not leave an
         # unanswered user turn or discard older conversation through trimming.
         history = self.chat_history + [{"role": "user", "content": f"[{self._get_timestamp()}] {user_input}"}]
         if len(history) > self.max_history * 2:
             history = history[-self.max_history * 2 :]
+        return history
 
+    def _openai_response(self, history, *, followup=False, explicitly_addressed=False):
+        system_message = get_hal_system_message()
+        options = {}
+        if followup:
+            system_message['content'] += ('\n' + FOLLOWUP_INSTRUCTIONS +
+                f'\nApplication signal: explicitly_addressed={str(explicitly_addressed).lower()}.')
+            options['response_format'] = FOLLOWUP_FORMAT
+        if self.service_tier is not None:
+            # The priority alias also works with HAL's pinned OpenAI SDK.
+            options['service_tier'] = ('priority' if self.service_tier == 'fast'
+                                       else self.service_tier)
+        if self.model_name == 'gpt-6-luna':
+            options['reasoning_effort'] = 'none'
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[system_message] + history,
+                max_completion_tokens=512,
+                temperature=1,
+                **options,
+            )
+        except OPENAI_ERRORS as exc:
+            raise _openai_service_error(exc) from exc
+        self.logger.info('LLM service tier: requested=%s; used=%s.',
+                         self.service_tier or 'auto (project default)',
+                         getattr(response, 'service_tier', None) or 'not reported')
+        return response
+
+    def get_followup_response(self, user_input, *, explicitly_addressed=False):
+        """One decision/response request; only accepted turns enter history."""
+        if self.backend != 'openai':
+            raise LLMServiceError('Follow-up filtering requires LLM_BACKEND=openai.')
+        history = self._history_with(user_input)
+        response = self._openai_response(history, followup=True,
+                                         explicitly_addressed=explicitly_addressed)
+        if not response.choices:
+            raise LLMServiceError('No follow-up decision received; wake phrase required again.')
+        choice = response.choices[0]
+        if choice.finish_reason != 'stop' or getattr(choice.message, 'refusal', None):
+            raise LLMServiceError('Incomplete follow-up decision; wake phrase required again.')
+        try:
+            result = FollowupDecision.parse(choice.message.content)
+        except ValueError:
+            raise LLMServiceError('Invalid follow-up decision; wake phrase required again.') from None
+        if result.decision == 'respond':
+            self.chat_history = history + [{'role': 'assistant', 'content': result.reply}]
+        return result
+
+    def get_response(self, user_input):
+        history = self._history_with(user_input)
         if self.backend == "openai":
-            system_message = get_hal_system_message()
-            messages = [system_message] + history
-            options = {}
-            if self.service_tier is not None:
-                # OpenAI accepts both names for Fast mode. The priority alias
-                # is also supported by HAL's pinned OpenAI 1.99.9 SDK.
-                options['service_tier'] = ('priority' if self.service_tier == 'fast'
-                                           else self.service_tier)
-            if self.model_name == 'gpt-6-luna':
-                # Preserve HAL's quick, non-reasoning replies and small output
-                # budget. Luna's default medium reasoning rejects temperature.
-                options['reasoning_effort'] = 'none'
-
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=messages,
-                    max_completion_tokens=512,
-                    temperature=1,
-                    **options,
-                )
-            except OPENAI_ERRORS as exc:
-                raise _openai_service_error(exc) from exc
-            # The server may serve a different tier than requested. Record its
-            # actual response, including when the SDK/server omits the field.
-            self.logger.info('LLM service tier: requested=%s; used=%s.',
-                             self.service_tier or 'auto (project default)',
-                             getattr(response, 'service_tier', None) or 'not reported')
+            response = self._openai_response(history)
             reply = response.choices[0].message.content.strip()
-
-            # Append assistant reply
             self.chat_history = history + [{"role": "assistant", "content": reply}]
             return reply
 
