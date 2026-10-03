@@ -258,6 +258,12 @@ follow-up candidates, so it cannot repeat background speech aloud. Existing
 `last_command.wav`. To disable the feature, set `FOLLOWUP_ENABLED=false` and
 restart; normal wake and spacebar requests continue to work.
 
+## Optional persistent memory
+
+For persistent recent conversation, personal facts, and topic notes, see
+[MEMORY.md](MEMORY.md). Memory is independently opt-in, uses editable JSON, and
+runs its reasoning updates after replies with decisions in a separate `memory.log`.
+
 ## Optional live query transcription
 
 Live mode sends query audio to OpenAI while the command is still being recorded.

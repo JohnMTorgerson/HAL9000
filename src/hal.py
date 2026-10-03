@@ -14,6 +14,7 @@ from pydub import AudioSegment
 from pydub.effects import normalize, compress_dynamic_range
 import io
 from llm_client import LLMClient, LLMServiceError
+from conversation_memory import ConversationMemory
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError
@@ -150,6 +151,7 @@ voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_de
 # LLM Configuration
 # ------------------------------------------------------------
 LLM_BACKEND = os.getenv("LLM_BACKEND", "openai")
+memory = ConversationMemory.from_env(logger, max_history=int(os.getenv("LLM_MAX_HISTORY")))
 if LLM_BACKEND == "openai":
     llm = LLMClient(
         backend="openai",
@@ -158,6 +160,7 @@ if LLM_BACKEND == "openai":
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         service_tier=os.getenv("LLM_SERVICE_TIER"),
         logger=logger,
+        memory=memory,
     )
 elif LLM_BACKEND == "ollama":
     llm = LLMClient(
@@ -257,6 +260,7 @@ def run():
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
             # get HAL's response from LLM
+            llm.begin_turn()
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
             if trigger_kind == 'followup':
@@ -348,6 +352,10 @@ def run():
             # play audio of HAL's response from normalized file
             play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
                        capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at)
+            # Persist the actual user/final spoken reply, never intermediate
+            # API payloads or rejected follow-ups. Background API work starts
+            # only after the reply has finished playing.
+            llm.finish_turn(user_input, hal_reply)
             # Never open a window after "Just a moment" or while HAL speaks.
             followups.after_response(explicit=explicit)
 
@@ -382,12 +390,14 @@ def run():
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
             display_mgr.stop()
             led.off()
+            llm.close_memory()
             sys.exit(0)
 
         except Exception:
             followups.close()
             display_mgr.stop()
             led.off()
+            llm.close_memory()
             raise
         finally:
             if live_stream is not None:

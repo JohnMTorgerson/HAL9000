@@ -56,12 +56,16 @@ def get_hal_system_message():
 
 class LLMClient:
     def __init__(self, backend, model_name, max_history=6, openai_api_key=None,
-                 service_tier=None, logger=None):
+                 service_tier=None, logger=None, memory=None):
         self.backend = backend
         self.model_name = model_name
         self.max_history = max_history
         self.chat_history = []
         self.logger = logger if logger is not None else logging.getLogger('HAL')
+        self.memory = memory
+        self.memory_context = None
+        self.turn_started_at = None
+        self.begin_turn()
 
         if backend == "openai":
             self.service_tier = (service_tier or '').strip().lower() or None
@@ -79,6 +83,23 @@ class LLMClient:
 
     def _get_timestamp(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def begin_turn(self):
+        """Refresh memory once per spoken request, not during external-API steps."""
+        self.turn_started_at = datetime.now().astimezone().isoformat()
+        if self.memory is not None:
+            snapshot = self.memory.read_context()
+            if snapshot is not None:
+                self.chat_history, self.memory_context = snapshot
+
+    def finish_turn(self, user_speech, spoken_reply):
+        """Only HAL's completed spoken exchanges may become persistent evidence."""
+        if self.memory is not None:
+            self.memory.record_turn(user_speech, spoken_reply, self.turn_started_at)
+
+    def close_memory(self):
+        if self.memory is not None:
+            self.memory.close()
 
     def _history_with(self, user_input):
         # Commit history only after success; a failed request must not leave an
@@ -105,7 +126,8 @@ class LLMClient:
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
-                messages=[system_message] + history,
+                messages=[system_message] + ([{'role': 'system', 'content': self.memory_context}]
+                                             if self.memory_context else []) + history,
                 max_completion_tokens=512,
                 temperature=1,
                 **options,

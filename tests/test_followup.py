@@ -328,6 +328,10 @@ class MainLoopTests(unittest.TestCase):
             if kwargs['label'] == 'reply':
                 playback_ends.append(clock.now)
         ns['play_audio'].side_effect = play
+        def finish(*args):
+            self.assertTrue(playback_ends)
+            self.assertEqual(clock.now, playback_ends[-1])
+        ns['llm'].finish_turn.side_effect = finish
         def read(on_trigger, **kwargs):
             reads.append(kwargs)
             if len(reads) == 1:
@@ -357,6 +361,10 @@ class MainLoopTests(unittest.TestCase):
                          ['debug query', 'reply', 'acknowledgment', 'reply'])
         self.assertEqual(ns['llm'].get_response.call_count, 2)  # initial and external follow-through
         self.assertEqual(ns['llm'].get_followup_response.call_count, 3)
+        # Long-term memory sees completed speech pairs only, after final
+        # playback. Neither ignored/end speech nor API payloads are evidence.
+        self.assertEqual([call.args for call in ns['llm'].finish_turn.call_args_list],
+                         [('What is the weather?', 'Rain today.'), ('What about tomorrow?', 'Sun tomorrow.')])
         displayed = [call.args[0] for call in ns['logger'].display.call_args_list]
         self.assertFalse(any('Bob' in text or 'That is all' in text for text in displayed))
         self.assertFalse(any('decision' in text or 'BACKGROUND' in text for text in displayed))

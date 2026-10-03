@@ -11,3 +11,9 @@ logs/
 src/wake-models/
 __pycache__/
 .pytest_cache/
+
+# Local conversations and personal memories (including backups and lock files)
+data/memory/
+memory.json*
+recent_conversation.json*
+memory.log*
