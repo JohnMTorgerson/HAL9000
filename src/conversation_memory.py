@@ -13,7 +13,7 @@ try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None
-from memory_prompts import MEMORY_FORMAT, RECALL_INSTRUCTIONS, UPDATE_INSTRUCTIONS
+from memory_prompts import MEMORY_FORMAT, recall_instructions, update_instructions
 from memory_store import MemoryStore
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -87,7 +87,7 @@ class MemoryUpdater:
             model=settings.model, reasoning_effort=settings.reasoning,
             max_completion_tokens=settings.max_tokens, service_tier='default',
             response_format=MEMORY_FORMAT,
-            messages=[{'role': 'system', 'content': UPDATE_INSTRUCTIONS},
+            messages=[{'role': 'system', 'content': update_instructions()},
                       {'role': 'user', 'content': json.dumps(batch, ensure_ascii=False)}],
         )
         usage = getattr(response, 'usage', None)
@@ -164,7 +164,7 @@ class ConversationMemory:
                                 'all active memories are still included.', estimated, self.settings.soft_tokens)
             self.decisions.warning('Memory soft budget exceeded: estimated_tokens=%s target=%s; nothing deleted.',
                                    estimated, self.settings.soft_tokens)
-        return history, RECALL_INSTRUCTIONS + '\n' + facts
+        return history, recall_instructions() + '\n' + facts
 
     def record_turn(self, user_speech, assistant_reply, at=None):
         if not self.available or self.stopping.is_set():

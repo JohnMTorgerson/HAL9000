@@ -1,4 +1,5 @@
 import re
+from user_identity import get_user_name
 import spacy
 nlp = spacy.load("en_core_web_sm")
 
@@ -35,12 +36,15 @@ def extract_named_entities(user_input: str):
     return entities
 
 # strip user name at the end of (some) sentences on HAL's output
-def strip_name_at_sentence_end(text: str, name: str = "Torgo") -> str:
+def strip_name_at_sentence_end(text: str, name: str | None = None) -> str:
     """
-    Remove trailing direct-address (e.g., ", Torgo." or " Torgo.") at the end of sentences
+    Remove trailing direct-address (e.g., ", <name>." or " <name>.") at the end of sentences
     except when the sentence is a question or matches common/natural stock phrases.
     Preserves original spacing between sentences.
     """
+    name = get_user_name() if name is None else name.strip()
+    if not name:
+        return text
     name_esc = re.escape(name)
 
     # Include any trailing whitespace in each sentence chunk so we can re-join without losing spaces.
@@ -87,7 +91,7 @@ def strip_name_at_sentence_end(text: str, name: str = "Torgo") -> str:
         # Remove the comma/space that belonged to the direct address
         pre_clean = re.sub(r'[,\s]+$', '', pre.strip())
 
-        # Keep known natural phrases like "I'm sorry, Torgo."
+        # Keep known natural phrases like "I'm sorry, <name>."
         if exception_re.search(pre_clean):
             out.append(s)
             continue

@@ -15,6 +15,7 @@ from pydub.effects import normalize, compress_dynamic_range
 import io
 from llm_client import LLMClient, LLMServiceError
 from conversation_memory import ConversationMemory
+from user_identity import get_user_name
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError
@@ -115,7 +116,7 @@ logger.addHandler(display_handler)
 DEBUG_ON = os.getenv("DEBUG_ON") == "True"
 DEBUG_PLAYBACK = os.getenv("DEBUG_PLAYBACK", "false").strip().lower() in ("1", "true", "yes", "on")
 PLATFORM = os.getenv("PLATFORM")
-USER = os.getenv("HAL_USER_NAME", "Dave").capitalize() # Default to "Dave" if HAL_USER_NAME not set in environment
+USER = get_user_name()
 
 # ------------------------------------------------------------
 # Recording/Playback Configuration

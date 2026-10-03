@@ -56,7 +56,7 @@ class StoreTests(unittest.TestCase):
 
     def remember_cat(self):
         batch = self.say('My cat is called Miso.')
-        self.store.apply(batch, changes(operation(batch['new_turns'][0], 'Torgo has a cat named Miso.')))
+        self.store.apply(batch, changes(operation(batch['new_turns'][0], 'The user has a cat named Miso.')))
         return self.store.memory['personal'][0]['id']
 
     def test_pet_survives_restart_old_age_and_many_weather_turns_without_history_growth(self):
@@ -78,7 +78,7 @@ class StoreTests(unittest.TestCase):
         ident = self.remember_cat()
         self.now += timedelta(days=1)
         batch = self.say('Actually, his name is Milo.')
-        self.store.apply(batch, changes(operation(batch['new_turns'][0], 'Torgo has a cat named Milo.',
+        self.store.apply(batch, changes(operation(batch['new_turns'][0], 'The user has a cat named Milo.',
                                                  action='update', ident=ident)))
         entry = self.store.memory['personal'][0]
         self.assertEqual(entry['id'], ident)
@@ -124,7 +124,7 @@ class StoreTests(unittest.TestCase):
         turn = batch['new_turns'][0]
         # A later statement queued while reasoning is in flight must survive.
         self.store.record_turn('My new project is building a clock.', 'Understood.')
-        self.store.apply(batch, changes(operation(turn, 'Torgo has a cat named Miso.', action='delete', ident=ident),
+        self.store.apply(batch, changes(operation(turn, 'The user has a cat named Miso.', action='delete', ident=ident),
                                        forget=True, forget_evidence=[{'turn_id': turn['id'], 'quote': turn['user_speech']}]))
         self.store.close()
         self.store = self.open_store()
@@ -193,7 +193,7 @@ class StoreTests(unittest.TestCase):
         self.store.close()
         path = self.directory / 'memory.json'
         valid = json.loads(path.read_text())
-        valid['personal'][0]['text'] = 'Torgo has a cat named Milo.'
+        valid['personal'][0]['text'] = 'The user has a cat named Milo.'
         path.write_text(json.dumps(valid))
         self.store = self.open_store()
         self.assertIn('Milo', self.store.recall()[1])
@@ -241,6 +241,16 @@ class APITests(unittest.TestCase):
         self.assertNotIn('tools', body)
         self.assertNotIn('temperature', body)
         self.assertNotIn('pod bay', body['messages'][0]['content'])
+
+    def test_background_request_uses_configured_user_name(self):
+        updater, requests = self.client(lambda _: completion(changes()))
+        for name in ('Alex McKenzie', 'Renée'):
+            with self.subTest(name=name), patch.dict('os.environ', {'HAL_USER_NAME': name}):
+                updater.update({'memory': {}, 'new_turns': []})
+                instructions = requests[-1]['messages'][0]['content']
+                self.assertIn(f'for a single user, {name}.', instructions)
+                self.assertIn(f'When {name} asks to forget', instructions)
+                self.assertNotIn('{user_name}', instructions)
 
     def test_truncated_refused_or_malformed_decisions_do_not_become_updates(self):
         for response in (completion(changes(), finish='length'), completion(changes(), refusal='No'),

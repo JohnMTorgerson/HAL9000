@@ -1,7 +1,6 @@
-import os
-from dotenv import load_dotenv
-load_dotenv()
-USER = os.getenv("HAL_USER_NAME", "Dave").capitalize() # Default to "Dave" if HAL_USER_NAME not set in environment
+from user_identity import get_user_name
+
+USER = get_user_name()
 
 prompt = "".join([
     # ------------------------------------------------------------
@@ -15,7 +14,7 @@ prompt = "".join([
     f"Do not use '{USER}' in every response, only when it feels natural.\n",
     f"Do not use '{USER}' at the end of a sentence.\n",
     f"NEVER end a sentence with '{USER}'. Only use it in the flow of conversation, in the middle of a sentence, but only when it feels appropriate.\n",
-    "Do not address the user as 'Dave'.\n",
+    "Use only the configured user name when addressing the user.\n",
     "Prefer to use the sentence 'Certainly.' at the beginning of the response when saying 'yes' to a yes or no question that is a request, but don't do it every time.\n",
     "Don't say 'certainly' instead of 'yes' when answering a yes or no question that is not a request for you to do something.\n",
     "Don't say 'certainly' in response to a question that is not phrased as a yes or no question.\n",

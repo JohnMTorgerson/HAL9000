@@ -16,6 +16,12 @@ MEMORY_MODEL=gpt-6-luna
 MEMORY_REASONING_EFFORT=medium
 ```
 
+Set `HAL_USER_NAME` in that same `.env` to your preferred name. The persona,
+response cleanup, and both memory prompts use this setting, preserving spelling
+and capitalization. If it is missing or blank, HAL uses `Dave`. Restart HAL after
+changing it. Changing this setting does not rename facts already saved in JSON
+or switch to a different user's memory; use a separate `MEMORY_DIR` for another user.
+
 Restart HAL. Look for `Persistent memory ready:` and the storage directory.
 The foreground still uses `LLM_MODEL`, its existing fast tier, and Luna's
 `reasoning_effort=none`. Background memory uses its own client, ordinary
@@ -87,7 +93,8 @@ today's live information. There is no import of old logs or raw microphone audio
 Only accepted speech and the final completed spoken response enter this store.
 Ignored/end follow-ups, failed turns and intermediate external API payloads are
 excluded. The assistant's reply helps interpret references but is never accepted
-as evidence for a personal fact. All speech is assumed to be from **Torgo**;
+as evidence for a personal fact. All speech is assumed to be from the user
+named by `HAL_USER_NAME` in `.env`;
 there is no speaker identification in this version.
 
 After playback finishes, a single background worker processes one new exchange
