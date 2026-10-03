@@ -22,6 +22,10 @@ class TranscriptionError(RuntimeError):
     """A transcription failure that can return HAL to listening."""
 
 
+class NoSpeechError(TranscriptionError):
+    """A completed transcription contained no recognized speech."""
+
+
 @dataclass(frozen=True)
 class LiveSettings:
     model: str = 'gpt-live-transcribe'
@@ -163,7 +167,7 @@ class LiveTranscription:
         if self._error is not None:
             raise self._error
         if not self._text:
-            raise TranscriptionError('Live transcription returned no speech. Please repeat the request.')
+            raise NoSpeechError('Live transcription returned no speech. Please repeat the request.')
         return self._text
 
     def cancel(self, reason='Live transcription was cancelled.'):
@@ -282,8 +286,10 @@ class LiveTranscription:
                                     raise TranscriptionError('Unexpected extra live transcription results.')
                     if item_id in finals:
                         text = finals[item_id]
-                        if not isinstance(text, str) or not text.strip():
-                            raise TranscriptionError('Live transcription returned no speech. Please repeat the request.')
+                        if not isinstance(text, str):
+                            raise TranscriptionError('Invalid live transcription response.')
+                        if not text.strip():
+                            raise NoSpeechError('Live transcription returned no speech. Please repeat the request.')
                         self._text = text.strip()
                         self.final_at = time.perf_counter()
                         self.logger.info('Timing: live transcription final %.3fs after audio end.',

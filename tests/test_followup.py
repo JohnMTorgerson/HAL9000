@@ -402,6 +402,55 @@ class MainLoopTests(unittest.TestCase):
         ns['llm'].get_followup_response.assert_called_once_with(
             'Hey HAL, a new question.', explicitly_addressed=True)
 
+    def test_empty_followup_keeps_original_twelve_second_deadline_or_expires(self):
+        for transcription_seconds in (2., 13.):
+            with self.subTest(transcription_seconds=transcription_seconds):
+                ns, run, clock = self.fixture()
+                ns['followup_settings'] = FollowupSettings(enabled=True, window=12.)
+                ns['llm'].get_response.return_value = 'Ready.'
+                ns['llm'].get_followup_response.return_value = FollowupDecision('respond', 'Still ready.')
+                reads, deadlines = [], []
+                def transcribe(*args):
+                    if len(reads) == 2:
+                        clock.advance(transcription_seconds)
+                        raise hal_tests.NoSpeechError('Transcription returned no speech.')
+                    return 'Are you ready?'
+                ns['stt'].transcribe.side_effect = transcribe
+                def read(on_trigger, **kwargs):
+                    reads.append(kwargs)
+                    if len(reads) == 1:
+                        on_trigger('wakeword')
+                    elif len(reads) == 2:
+                        deadlines.append(kwargs['followup_deadline'])
+                        self.assertAlmostEqual(deadlines[0] - clock.now, 12.)
+                        clock.advance(1.)
+                        on_trigger('followup')
+                    elif len(reads) == 3:
+                        # Empty audio was never sent to the LLM, TTS or memory.
+                        ns['llm'].get_followup_response.assert_not_called()
+                        self.assertEqual(ns['llm'].finish_turn.call_count, 1)
+                        self.assertEqual(ns['voice'].synthesize_wav.call_count, 1)
+                        ns['logger'].error.assert_not_called()
+                        self.assertEqual(ns['led'].method_calls[-1][0], 'off')
+                        if transcription_seconds > 12.:
+                            self.assertNotIn('followup_deadline', kwargs)
+                            raise KeyboardInterrupt
+                        self.assertEqual(kwargs['followup_deadline'], deadlines[0])
+                        self.assertAlmostEqual(kwargs['followup_deadline'] - clock.now, 9.)
+                        on_trigger('followup')
+                    else:
+                        # A real accepted follow-up still renews the window normally.
+                        self.assertGreater(kwargs['followup_deadline'], deadlines[0])
+                        self.assertEqual(ns['llm'].finish_turn.call_count, 2)
+                        raise KeyboardInterrupt
+                    return [.1], 16000
+                ns['voice_input'].read_command.side_effect = read
+                with self.assertRaises(SystemExit):
+                    run()
+                messages = [call.args[0] % call.args[1:] for call in ns['logger'].info.call_args_list]
+                self.assertIn('FOLLOWUP heard: [empty transcription]', messages)
+                self.assertTrue(any('Empty follow-up ignored;' in message for message in messages))
+
     def test_bad_followup_decision_closes_window_without_tts_or_external_requests(self):
         ns, run, clock = self.fixture()
         ns['llm'].get_response.return_value = 'Ready.'

@@ -19,7 +19,7 @@ sys.path.insert(0, str(SRC))
 from audio_devices import choose_input_device
 from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
-from live_transcription import TranscriptionError
+from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 
 
@@ -255,7 +255,7 @@ class MainLoopTests(unittest.TestCase):
             'normalize_audio': lambda audio: audio,
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,
-            'TranscriptionError': TranscriptionError,
+            'TranscriptionError': TranscriptionError, 'NoSpeechError': NoSpeechError,
             'AudioOverflowError': AudioOverflowError,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
             'explicitly_addresses_hal': explicitly_addresses_hal,

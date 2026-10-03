@@ -6,7 +6,7 @@ import numpy as np
 import openai
 from dotenv import load_dotenv
 from speech_to_text import SpeechToText
-from live_transcription import LiveSettings, LiveTranscription, TranscriptionError, _service_failure
+from live_transcription import LiveSettings, LiveTranscription, TranscriptionError, NoSpeechError, _service_failure
 
 load_dotenv()
 
@@ -63,6 +63,10 @@ class WhisperSTT(SpeechToText):
                 text = live_stream.result()
                 self.logger.info('Transcription source: live (%s).', self.live_settings.model)
                 return text
+            except NoSpeechError:
+                # A completed empty result is not a service failure. Do not pay
+                # for a fallback upload of the same noise/silence.
+                raise
             except TranscriptionError as exc:
                 if live_stream is not None:
                     live_stream.close()
@@ -93,8 +97,10 @@ class WhisperSTT(SpeechToText):
                 except openai.APIError as exc:
                     raise _service_failure(exc) from None
                 text = transcript.text
-        if not isinstance(text, str) or not text.strip():
-            raise TranscriptionError('Transcription returned no speech. Please repeat the request.')
+        if not isinstance(text, str):
+            raise TranscriptionError('Invalid transcription response.')
+        if not text.strip():
+            raise NoSpeechError('Transcription returned no speech. Please repeat the request.')
         self.logger.info('Transcription source: %s (%s).', source,
                          self.model_name if self.backend == 'local' else self.API_MODEL)
         return text.strip()

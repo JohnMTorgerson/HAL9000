@@ -18,7 +18,7 @@ from conversation_memory import ConversationMemory
 from user_identity import get_user_name
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
-from live_transcription import TranscriptionError
+from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from speech_logging import SpeechFormatter
 from voice_input import VoiceInput, CommandTooLongError
@@ -379,6 +379,23 @@ def run():
             logger.warning("%s", exc)
             logger.display("That request was too long. Please try a shorter request.")
             led.off()
+            continue
+
+        except NoSpeechError as exc:
+            led.off()
+            if trigger_kind == 'followup':
+                logger.info('FOLLOWUP heard: [empty transcription]', extra={'speech_role': 'user'})
+                remaining_deadline = followups.deadline()
+                if remaining_deadline is not None:
+                    logger.info('Empty follow-up ignored; %.2fs remaining; the existing deadline is unchanged.',
+                                max(0., remaining_deadline - time.perf_counter()))
+                else:
+                    logger.info('Empty follow-up ignored; follow-up window expired; returning to wake listening.')
+            else:
+                followups.close()
+                logger.warning('%s', exc)
+                logger.display(f"HAL: {exc}")
+                logger.info('Returning to listening.')
             continue
 
         except (LLMServiceError, TranscriptionError) as exc:

@@ -237,6 +237,14 @@ even if some background speech is accepted by mistake.
 | `FOLLOWUP_WINDOW_SECONDS` | `8` | 1–30 seconds |
 | `FOLLOWUP_SESSION_SECONDS` | `120` | At least the window length, up to 600 seconds |
 
+If background noise triggers a follow-up capture but transcription returns no
+speech, HAL logs `FOLLOWUP heard: [empty transcription]` and resumes listening
+for the remainder of the original window. Recording/transcription time counts
+toward that deadline; an empty result neither closes it early nor restarts it.
+No LLM call, spoken response, or memory update is made for an empty result.
+Live transcription does not retry an empty result through the paid static
+fallback. Real transcription/service failures still close the window.
+
 Silence is processed locally and makes no transcription or LLM request. Speech
 that is ultimately ignored can still incur API transcription and classification
 charges. INFO logs identify the open window, `respond`/`ignore`/`end` decisions,

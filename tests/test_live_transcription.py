@@ -13,7 +13,7 @@ import numpy as np
 from scipy.signal import resample_poly
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from live_transcription import LiveSettings, LiveTranscription, PCM24kEncoder, TranscriptionError
+from live_transcription import LiveSettings, LiveTranscription, PCM24kEncoder, TranscriptionError, NoSpeechError
 from whisper_stt import WhisperSTT
 
 
@@ -177,6 +177,7 @@ class StreamingTests(unittest.TestCase):
                                 'message': 'secret fixture credential must never be logged'}})
                 with self.assertRaises(TranscriptionError) as caught:
                     stream.result()
+                self.assertEqual(isinstance(caught.exception, NoSpeechError), scenario == 'empty')
                 self.assertNotIn('secret fixture', str(caught.exception))
                 if scenario == 'wrong_config':
                     self.assertFalse(socket.appended.is_set())
@@ -316,6 +317,23 @@ class ModeTests(unittest.TestCase):
                         stt.transcribe(np.ones(1600), live_stream=stream)
                     self.assertEqual(requests, [])
                 stream.close.assert_called_once()
+
+    def test_empty_static_results_are_no_speech_but_malformed_results_are_failures(self):
+        for text in ('', '   ', None):
+            with self.subTest(text=text):
+                stt, requests = self.make_stt(handler=lambda request: httpx.Response(200, json={'text': text}))
+                with self.assertRaises(TranscriptionError) as caught:
+                    stt.transcribe(np.ones(1600))
+                self.assertEqual(isinstance(caught.exception, NoSpeechError), isinstance(text, str))
+                self.assertEqual(len(requests), 1)
+
+    def test_empty_live_result_does_not_trigger_paid_static_fallback(self):
+        stt, requests = self.make_stt({'TRANSCRIPTION_MODE': 'live', 'LIVE_TRANSCRIPTION_FALLBACK': 'true'})
+        stream = Mock()
+        stream.result.side_effect = NoSpeechError('No speech recognized.')
+        with self.assertRaises(NoSpeechError):
+            stt.transcribe(np.ones(1600), live_stream=stream)
+        self.assertEqual(requests, [])
 
     def test_static_service_failure_is_recoverable_and_not_retried(self):
         stt, requests = self.make_stt(handler=lambda request: httpx.Response(429, json={'error': {
