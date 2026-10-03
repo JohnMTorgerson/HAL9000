@@ -264,6 +264,23 @@ For persistent recent conversation, personal facts, and topic notes, see
 [MEMORY.md](MEMORY.md). Memory is independently opt-in, uses editable JSON, and
 runs its reasoning updates after replies with decisions in a separate `memory.log`.
 
+## Static API transcription language
+
+With `TRANSCRIPTION_BACKEND=api` and `TRANSCRIPTION_MODE=static`, HAL sends an
+English language hint by default. This also applies to an explicitly enabled
+static fallback from live mode. Configure it in `.env`, then restart HAL:
+
+```dotenv
+TRANSCRIPTION_LANGUAGE=en
+```
+
+Use a different ISO-639-1 code, such as `fr`, for another language. Set
+`TRANSCRIPTION_LANGUAGE=` to omit the hint and allow automatic detection.
+This setting only affects static API requests; live mode continues to use
+`LIVE_TRANSCRIPTION_LANGUAGES`, and local Whisper keeps its existing behavior.
+OpenAI documents language hints as improving accuracy and latency; measure the
+actual improvement using HAL's transcription and total response timing logs.
+
 ## Optional live query transcription
 
 Live mode sends query audio to OpenAI while the command is still being recorded.

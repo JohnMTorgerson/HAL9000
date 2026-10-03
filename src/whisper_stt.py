@@ -19,6 +19,7 @@ class WhisperSTT(SpeechToText):
         self.backend = os.getenv('TRANSCRIPTION_BACKEND', 'local').strip().lower()
         self.mode = os.getenv('TRANSCRIPTION_MODE', 'static').strip().lower()
         self.model_name = model_name or os.getenv('WHISPER_MODEL_NAME', 'base')
+        self.language = os.getenv('TRANSCRIPTION_LANGUAGE', 'en').strip().lower()
         self.model = None
         self.live_settings = None
         self.fallback = False
@@ -87,7 +88,8 @@ class WhisperSTT(SpeechToText):
                 wav.seek(0)
                 try:
                     transcript = self.client.audio.transcriptions.create(
-                        model=self.API_MODEL, file=('command.wav', wav, 'audio/wav'))
+                        model=self.API_MODEL, file=('command.wav', wav, 'audio/wav'),
+                        **({'language': self.language} if self.language else {}))
                 except openai.APIError as exc:
                     raise _service_failure(exc) from None
                 text = transcript.text

@@ -278,6 +278,19 @@ class ModeTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertIn(b'gpt-4o-mini-transcribe', requests[0].content)
         self.assertIn(b'RIFF', requests[0].content)
+        self.assertIn(b'name="language"\r\n\r\nen\r\n', requests[0].content)
+
+    def test_static_language_can_be_changed_or_omitted(self):
+        for value in (' FR ', '', '   '):
+            with self.subTest(language=value):
+                stt, requests = self.make_stt({'TRANSCRIPTION_LANGUAGE': value})
+                stt.transcribe(np.ones(1600, dtype=np.float32) * .1)
+                body = requests[0].content
+                if value.strip():
+                    self.assertIn(b'name="language"\r\n\r\nfr\r\n', body)
+                else:
+                    self.assertNotIn(b'name="language"', body)
+
 
     def test_live_success_does_not_also_upload_a_file(self):
         stt, requests = self.make_stt({'TRANSCRIPTION_MODE': 'live'})
