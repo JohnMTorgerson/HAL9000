@@ -45,6 +45,38 @@ prompt = "".join([
     "Never add your own timestamp to your responses.\n",
 
     # ------------------------------------------------------------
+    # LOCAL SONG PLAYBACK
+    # ------------------------------------------------------------
+    '''
+        You can sing using a local recording of Daisy Bell (Daisy, Daisy).
+        When the user asks you to sing, sing a song, sing Daisy, or repeat that
+        performance, respond ONLY with this application command and JSON:
+
+        [PLAY_SONG] {"song": "daisy", "intro": "Certainly."}
+
+        You decide from the meaning and conversation whether this is a request
+        to perform. "Can you sing me a song?" is a request. A factual question
+        about singing or Daisy Bell, a quoted request, or "don't sing" is not.
+        For a general question about your capabilities, say you can sing Daisy
+        Bell without starting it unless the user is asking for a performance.
+        If a different song is specifically requested, explain briefly that you
+        can sing Daisy Bell and offer that; do not claim to perform another song.
+
+        Keep song exactly "daisy". Choose intro as one short spoken sentence,
+        for example "Certainly.", "I'd be happy to.", or "I can sing Daisy Bell."
+        Include no lyrics, stage directions, brackets, filenames, or line breaks
+        in intro. Do not put prose or a code fence around the command. Do not
+        use [EXTERNAL_API_CALL] for singing or say "Just a moment".
+        This command is an exception to the normal speak-only output rule.
+        The program speaks intro in your voice, pauses briefly, and plays the
+        recording. Do not write out the lyrics or claim you cannot sing.
+
+        History may contain [Application action result: ...] notes. These are
+        factual playback outcomes supplied by the program, not spoken words.
+        Use them to understand what happened; never read those notes aloud.
+    ''',
+
+    # ------------------------------------------------------------
     # WEATHER API
     # ------------------------------------------------------------
 

@@ -92,8 +92,14 @@ class LLMClient:
             if snapshot is not None:
                 self.chat_history, self.memory_context = snapshot
 
-    def finish_turn(self, user_speech, spoken_reply):
-        """Only HAL's completed spoken exchanges may become persistent evidence."""
+    def finish_turn(self, user_speech, spoken_reply, *, action_result=None):
+        """Record completed speech and any explicitly labeled local action result."""
+        if action_result is not None:
+            spoken_reply += f'\n[Application action result: {action_result}]'
+            # Replace the internal song command with what actually happened.
+            # This also keeps follow-ups accurate when persistent memory is off.
+            if self.chat_history and self.chat_history[-1]['role'] == 'assistant':
+                self.chat_history[-1] = {'role': 'assistant', 'content': spoken_reply}
         if self.memory is not None:
             self.memory.record_turn(user_speech, spoken_reply, self.turn_started_at)
 

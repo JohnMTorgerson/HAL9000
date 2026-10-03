@@ -1,6 +1,7 @@
 .env
 .DS_Store
 *.wav
+!src/HAL-clips/Daisy.wav
 src/__pycache__
 tests/__pycache__
 src/display/__pycache__

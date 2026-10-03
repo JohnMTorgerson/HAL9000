@@ -21,6 +21,8 @@ from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from speech_logging import SpeechFormatter
+from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
+                          DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -292,7 +294,8 @@ def run():
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
             # first testing if the query looks like a factual question about a named entity we can search for
-            if re.search(r"(i\s+don.?t\s+know|i\s+don.?t\s+have|i.?m\s+sorry.*can.?t\s+do)", hal_reply.strip(), re.I):
+            if (not hal_reply.lstrip().startswith(PLAY_SONG_MARKER) and
+                    re.search(r"(i\s+don.?t\s+know|i\s+don.?t\s+have|i.?m\s+sorry.*can.?t\s+do)", hal_reply.strip(), re.I)):
                 named_entities = extract_named_entities(user_input)
                 if DEBUG_ON:
                     logger.debug(f"HAL responded with ignorance: {hal_reply}")
@@ -331,6 +334,22 @@ def run():
                 hal_reply = llm.get_response(enriched_prompt)
                 logger.info('Timing: follow-up LLM response %.3fs.', time.perf_counter() - stage_started)
 
+            # A local song command has its own acknowledgment. Never send the
+            # command/JSON to Piper or play the external-API waiting clip.
+            song = None
+            action_result = None
+            try:
+                song = parse_song_request(hal_reply)
+                if song is not None:
+                    if not DAISY_PATH.is_file():
+                        raise OSError(f'Song recording is missing: {DAISY_PATH}')
+                    hal_reply = song.intro
+            except (SongRequestError, OSError) as exc:
+                logger.error('Unable to prepare song playback: %s', exc)
+                song = None
+                hal_reply = SONG_FAILURE_REPLY
+                action_result = 'Song request failed before playback; no song was played.'
+
             # sanitize HAL's habit of ending sentences with ", {USER}"
             filtered_reply = strip_name_at_sentence_end(hal_reply, name=USER)
             if DEBUG_ON and filtered_reply != hal_reply:
@@ -356,11 +375,28 @@ def run():
             play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
                        capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at,
                        first_response=first_response)
+            if song is not None:
+                time.sleep(SONG_PAUSE_SECONDS)
+                logger.display('HAL: Singing Daisy Bell.')
+                try:
+                    # This clip is already mastered to match "Just a moment".
+                    # Keep its level and EQ, while using the normal output device.
+                    play_audio(str(DAISY_PATH), label='song: Daisy Bell', preserve_mastering=True)
+                except Exception:
+                    logger.exception('Daisy Bell playback failed.')
+                    logger.display(f'HAL: {SONG_FAILURE_REPLY}')
+                    action_result = 'Daisy Bell playback failed; completion was not confirmed.'
+                else:
+                    action_result = 'Played the Daisy Bell recording to completion.'
             # Persist the actual user/final spoken reply, never intermediate
             # API payloads or rejected follow-ups. Background API work starts
-            # only after the reply has finished playing.
-            llm.finish_turn(user_input, hal_reply)
-            # Never open a window after "Just a moment" or while HAL speaks.
+            # only after all playback, including a song. Label action outcomes
+            # separately from speech so history never claims a failed song played.
+            if action_result is not None:
+                llm.finish_turn(user_input, hal_reply, action_result=action_result)
+            else:
+                llm.finish_turn(user_input, hal_reply)
+            # Never open a window after "Just a moment", an intro, or during a song.
             followups.after_response(explicit=explicit)
 
             #turn LED off
@@ -662,19 +698,22 @@ def handle_api_call(api_type, params, user_input):
 #         logger.error(f"Audio playback failed: {e}")
 
 def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None,
-               speech_ended_at=None, first_response=False):
+               speech_ended_at=None, first_response=False, preserve_mastering=False):
     preparation_started = time.perf_counter()
-    # Load audio, apply high pass filter
-    audio = AudioSegment.from_file(filename)
-    audio = audio.high_pass_filter(HI_PASS_FREQ)
+    if preserve_mastering:
+        data, sr = sf.read(filename, dtype="float32", always_2d=True)
+    else:
+        # Load audio, apply high pass filter
+        audio = AudioSegment.from_file(filename)
+        audio = audio.high_pass_filter(HI_PASS_FREQ)
 
-    # Export to raw data for playback
-    raw_audio = io.BytesIO()
-    audio.export(raw_audio, format="wav")
-    raw_audio.seek(0)
-    
-    # Read back as numpy array for sounddevice
-    data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
+        # Export to raw data for playback
+        raw_audio = io.BytesIO()
+        audio.export(raw_audio, format="wav")
+        raw_audio.seek(0)
+
+        # Read back as numpy array for sounddevice
+        data, sr = sf.read(raw_audio, dtype="float32", always_2d=True)
 
     # # Read file as float32, always 2D
     # data, sr = sf.read(filename, dtype="float32", always_2d=True)
@@ -696,9 +735,10 @@ def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=N
         sr = device_sr
 
     # normalize audio
-    peak = np.max(np.abs(data))
-    if peak > 0:
-        data = data / peak  # scale so max amplitude is 1.0
+    if not preserve_mastering:
+        peak = np.max(np.abs(data))
+        if peak > 0:
+            data = data / peak  # scale so max amplitude is 1.0
 
     # Play and wait
     stream_started = time.perf_counter()

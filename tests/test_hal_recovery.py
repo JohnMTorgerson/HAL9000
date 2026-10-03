@@ -21,6 +21,8 @@ from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
 from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
+from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
+                          DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
 
 
 def load_hal_function(name, namespace):
@@ -257,6 +259,9 @@ class MainLoopTests(unittest.TestCase):
             'LLMServiceError': LLMServiceError,
             'TranscriptionError': TranscriptionError, 'NoSpeechError': NoSpeechError,
             'AudioOverflowError': AudioOverflowError,
+            'parse_song_request': parse_song_request, 'SongRequestError': SongRequestError,
+            'PLAY_SONG_MARKER': PLAY_SONG_MARKER, 'DAISY_PATH': DAISY_PATH,
+            'SONG_PAUSE_SECONDS': SONG_PAUSE_SECONDS, 'SONG_FAILURE_REPLY': SONG_FAILURE_REPLY,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
             'explicitly_addresses_hal': explicitly_addresses_hal,
             'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
