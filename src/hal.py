@@ -231,6 +231,7 @@ def run():
             audio, fs = captured
             capture_ready_at = time.perf_counter()
             speech_ended_at = voice_input.last_speech_end_at
+            first_response = True
             if triggered_at is not None:
                 logger.info('Timing: trigger to capture ready %.3fs (includes microphone cleanup).',
                             capture_ready_at - triggered_at)
@@ -308,7 +309,8 @@ def run():
                 logger.display("HAL: Just a moment...", extra={'speech_role': 'hal'})
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
                            triggered_at=triggered_at, capture_ready_at=capture_ready_at,
-                           speech_ended_at=speech_ended_at)
+                           speech_ended_at=speech_ended_at, first_response=first_response)
+                first_response = False
 
                 logger.display(f"HAL (external request): {hal_reply}")
                 command = shlex.split(hal_reply[len("[EXTERNAL_API_CALL]"):].strip()) # shlex splits by space, except respect quotes
@@ -352,7 +354,8 @@ def run():
 
             # play audio of HAL's response from normalized file
             play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
-                       capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at)
+                       capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at,
+                       first_response=first_response)
             # Persist the actual user/final spoken reply, never intermediate
             # API payloads or rejected follow-ups. Background API work starts
             # only after the reply has finished playing.
@@ -642,7 +645,7 @@ def handle_api_call(api_type, params, user_input):
 #         logger.error(f"Audio playback failed: {e}")
 
 def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None,
-               speech_ended_at=None):
+               speech_ended_at=None, first_response=False):
     preparation_started = time.perf_counter()
     # Load audio, apply high pass filter
     audio = AudioSegment.from_file(filename)
@@ -694,6 +697,16 @@ def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=N
     if speech_ended_at is not None:
         logger.info('Timing: estimated speech end to %s playback start %.3fs.',
                     label, playback_started - speech_ended_at)
+    if first_response:
+        # Only the first spoken response counts, including an API acknowledgment.
+        # Debug playback and subsequent API/final replies do not emit this total.
+        if speech_ended_at is not None:
+            logger.info('Timing: TOTAL response latency %.3fs (estimated speech end -> first HAL audio; %s).',
+                        playback_started - speech_ended_at, label)
+        elif capture_ready_at is not None:
+            logger.info('Timing: TOTAL response latency %.3fs (capture ready -> first HAL audio; %s; '
+                        'speech end unavailable, excludes endpoint wait).',
+                        playback_started - capture_ready_at, label)
     sd.wait()
     logger.info('Timing: %s playback finished; stream wait %.3fs.', label, time.perf_counter() - playback_started)
 

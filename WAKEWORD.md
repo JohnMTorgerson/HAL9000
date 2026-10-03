@@ -451,8 +451,17 @@ Live mode also logs connection setup time, the first partial transcript's timing
 earlier work overlaps recording. Check `Transcription source` to distinguish a
 live result from a configured static fallback.
 
-`Timing: estimated speech end to ... playback start` is the most useful total
-for comparing the delay before HAL's first voice. Use `acknowledgment` for an
+`Timing: TOTAL response latency` reports the delay from estimated speech end
+until the first HAL audio playback starts, once per answered request. For an
+external request it stops at the first “Just a moment”; for a direct answer it
+stops at the reply. It includes silence/end-of-speech waiting, microphone cleanup,
+transcription, LLM processing and any synthesis/playback preparation before that
+first audio. Idle listening and reply duration are excluded. Ignored/end
+follow-ups and debug query playback do not emit this total. If no speech endpoint
+is available, the total explicitly uses `capture ready` instead and excludes
+endpoint waiting. No new setting is required; it is logged at INFO.
+
+`Timing: estimated speech end to ... playback start` retains the detailed totals. Use `acknowledgment` for an
 external request and `reply` for a direct answer. The speech-end estimate uses
 local VAD, the microphone read clock, and the driver's reported input latency;
 it is not a physical speaker/microphone measurement. It is omitted if no speech

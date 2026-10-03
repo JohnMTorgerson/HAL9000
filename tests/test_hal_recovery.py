@@ -391,9 +391,10 @@ class MainLoopTests(unittest.TestCase):
             return [.1], 16000
         ns['voice_input'].read_command.side_effect = read_command
         playback_elapsed = []
-        def play(filename, *, label, triggered_at, capture_ready_at, speech_ended_at):
+        def play(filename, *, label, triggered_at, capture_ready_at, speech_ended_at, first_response):
             self.assertIsNone(speech_ended_at)
             self.assertEqual((triggered_at, capture_ready_at), captures[-1])
+            self.assertEqual(first_response, label == 'acknowledgment' or len(captures) == 2)
             playback_elapsed.append((label, clock.now - triggered_at))
             clock.advance(.6)
         ns['play_audio'].side_effect = play
@@ -438,12 +439,25 @@ class PlaybackTimingTests(unittest.TestCase):
             self.assertIn('Timing: trigger to reply playback start 5.300s.', messages)
             self.assertIn('Timing: capture ready to reply playback start 4.300s.', messages)
             self.assertIn('Timing: estimated speech end to reply playback start 4.800s.', messages)
+            self.assertIn('Timing: TOTAL response latency 4.800s (estimated speech end -> first HAL audio; reply).', messages)
             clock.advance(1.)
         sd.wait.side_effect = wait
         play = load_hal_function('play_audio', ns)
-        play('fixture.wav', label='reply', triggered_at=5., capture_ready_at=6., speech_ended_at=5.5)
+        play('fixture.wav', label='reply', triggered_at=5., capture_ready_at=6., speech_ended_at=5.5, first_response=True)
         self.assertEqual(logger.info.call_args.args[0] % logger.info.call_args.args[1:],
                          'Timing: reply playback finished; stream wait 1.000s.')
+        sd.wait.side_effect = None
+        for first, ended, expected in ((True, None, 1), (False, 5.5, 0)):
+            logger.reset_mock()
+            play('fixture.wav', label='acknowledgment', capture_ready_at=clock.now,
+                 speech_ended_at=ended, first_response=first)
+            totals = [call.args[0] % call.args[1:] for call in logger.info.call_args_list
+                      if 'TOTAL response latency' in call.args[0]]
+            self.assertEqual(len(totals), expected)
+            if expected:
+                self.assertIn('0.300s (capture ready -> first HAL audio; acknowledgment;', totals[0])
+                self.assertIn('excludes endpoint wait', totals[0])
+
 
 
 if __name__ == '__main__':
