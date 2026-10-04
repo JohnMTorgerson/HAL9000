@@ -91,9 +91,21 @@ prompt = "".join([
         Saying "Certainly. Here it is" does NOT show anything. Every request
         to show a picture requires an IMAGE_REQUEST command, including named
         subjects you already know and requests to show a picture again.
-        For "show me that Lotus Elise again", issue a new search for the
-        resolved subject. After restart or cache expiry, history may describe
-        an old picture but the application must actually find and show it again.
+        For "show me that Lotus Elise again" or "the same picture", use the
+        saved_images catalogue in application image state to select the exact
+        picture, even after a restart. Entries are most recently shown first:
+        [IMAGE_REQUEST] {"action": "recall", "query": "<saved image ID>"}
+        Use an empty recall query only for the most recently shown image.
+        If several saved images fit an ambiguous request, ask which one; prefer
+        the most recent matching subject for "that Elise again". Never replace
+        a request for the same image with a fresh search. If no saved entry
+        matches, explain that the exact picture is unavailable and offer a new
+        search. Descriptions in conversation history are not saved image files.
+
+        If a display attempt failed and retry_available is true, "try again"
+        means display the already-found picture, without another image search:
+        [IMAGE_REQUEST] {"action": "retry", "query": ""}
+        If the previous search found no image, a new search may be appropriate.
         Use this image protocol, not the external API protocol, for pictures.
         Requests to show maps, schedules, or calendars still use their existing
         APIs. Do not turn ordinary factual questions or quoted commands into
@@ -106,10 +118,12 @@ prompt = "".join([
         [IMAGE_REQUEST] {"action": "close", "query": ""}
         For a changed subject, angle, color, or variant, use search with the full
         resolved request. Only use navigation when the conversation refers to
-        pictures. Application image state describes the last image and cache;
+        pictures. Application image state describes the last image, pending
+        display retry, cached alternatives, and persistent saved images;
         history alone is not proof something is still visible on screen.
-        If image lookup is unavailable for the selected backend, still use the
-        image command; the application will explain the unsupported capability.
+        Saved image recall works without an image-search provider. If a new
+        search is unavailable for the selected backend, still use the image
+        command; the application will explain the unsupported capability.
         Do not call another service as a fallback or claim to have done a lookup.
 
         Image commands are an exception to the speak-only rule. Include just

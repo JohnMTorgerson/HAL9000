@@ -4,6 +4,7 @@ import os
 import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -11,7 +12,8 @@ pytestmark = pytest.mark.skipif(os.getenv('HAL_BROWSER_TESTS') != '1',
                                 reason='Opt-in test requires Playwright and Chromium')
 
 
-def test_image_load_and_pinned_clickable_citation_in_real_browser():
+@pytest.mark.parametrize('drop_first_ack', [False, True])
+def test_image_load_and_pinned_clickable_citation_in_real_browser(drop_first_ack):
     from PIL import Image, ImageDraw
     from playwright.sync_api import sync_playwright
     import uvicorn
@@ -23,6 +25,7 @@ def test_image_load_and_pinned_clickable_citation_in_real_browser():
         port = sock.getsockname()[1]
     srv.overlays.clear()
     srv.image_loads.clear()
+    srv.image_visibility.clear()
     server = uvicorn.Server(uvicorn.Config(srv.app, host='127.0.0.1', port=port, log_level='error'))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -47,10 +50,34 @@ def test_image_load_and_pinned_clickable_citation_in_real_browser():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(display.base)
                 page.wait_for_selector('#top img')
+                loaded_reports = []
+                if drop_first_ack:
+                    def acknowledge(route):
+                        payload = route.request.post_data_json
+                        if payload['status'] == 'loaded':
+                            loaded_reports.append(payload)
+                            if len(loaded_reports) == 1:
+                                route.abort('failed')
+                                return
+                        route.continue_()
+                    page.route('**/api/images/loaded', acknowledge)
+
+                def present(citations):
+                    # Keep Playwright's event loop servicing intercepted POSTs
+                    # while the HAL HTTP client waits in another thread.
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(display.present_image, raw.getvalue(), citations=citations)
+                        while not future.done():
+                            page.wait_for_timeout(20)
+                        return future.result()
+
                 display.text('\n'.join(f'Conversation line {n}' for n in range(30)),
                              on=('bottom',), priority=70, key='logs')
                 citations = [{'url': 'https://www.example.com/phone?model=1', 'label': 'Example product page'}]
-                assert display.present_image(raw.getvalue(), citations=citations) == 'loaded'
+                assert present(citations) == 'loaded'
+                if drop_first_ack:
+                    assert len(loaded_reports) >= 2
+                    assert loaded_reports[0]['token'] == loaded_reports[1]['token']
                 link = page.locator('#top .citations a')
                 assert link.inner_text() == 'example.com'
                 assert link.get_attribute('href') == citations[0]['url']
@@ -73,7 +100,7 @@ def test_image_load_and_pinned_clickable_citation_in_real_browser():
                 assert link.inner_text() == 'example.com'
                 # Reusing the same picture produces a fresh load acknowledgment
                 # and refreshes its source; stale acknowledgments cannot win.
-                assert display.present_image(raw.getvalue(), citations=[{
+                assert present([{
                     'url': 'https://example.com/other', 'label': '<img src=x onerror=alert(1)>'}]) == 'loaded'
                 assert page.locator('#top .citations img').count() == 0
                 assert link.inner_text() == 'example.com'
@@ -89,3 +116,4 @@ def test_image_load_and_pinned_clickable_citation_in_real_browser():
         srv.overlays.clear()
         srv.clients.clear()
         srv.image_loads.clear()
+        srv.image_visibility.clear()

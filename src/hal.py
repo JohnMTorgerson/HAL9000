@@ -24,6 +24,7 @@ from speech_logging import SpeechFormatter
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
 from image_lookup import IMAGE_MARKER, ImageWorkflow, make_image_provider, repair_image_reply
+from image_history import ImageHistory
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -176,7 +177,8 @@ else:
     llm = None
     raise ValueError(f"Unknown LLM Backend: {LLM_BACKEND}")
 
-images = ImageWorkflow(make_image_provider(llm, logger), display, logger=logger)
+images = ImageWorkflow(make_image_provider(llm, logger), display,
+                       history=ImageHistory(logger=logger), logger=logger)
 
 if followup_settings.enabled and LLM_BACKEND != 'openai':
     raise ValueError('FOLLOWUP_ENABLED requires LLM_BACKEND=openai with structured-output support.')

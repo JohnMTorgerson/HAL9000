@@ -4,6 +4,7 @@ import requests
 from typing import Iterable, Optional, Literal, Dict, Any
 import json
 import base64
+import logging
 import time
 from urllib.parse import quote
 
@@ -19,6 +20,7 @@ class DisplayClient:
         self.base = base_url.rstrip("/")
         self.timeout = timeout
         self._s = requests.Session()
+        self.logger = logging.getLogger('HAL')
 
     # -------- core helpers --------
     def push(
@@ -78,23 +80,34 @@ class DisplayClient:
         }, timeout=self.timeout)
         response.raise_for_status()
         token = response.json()['token']
+        self.logger.info('Image display upload accepted: token=%s; bytes=%d', token, len(data))
         deadline = time.monotonic() + wait_seconds
         loaded = False
+        last_state = None
         try:
             while time.monotonic() < deadline:
                 response = self._s.get(f'{self.base}/api/images/status/{token}', timeout=self.timeout)
                 response.raise_for_status()
-                status = response.json()['status']
+                state = response.json()
+                status = state['status']
+                if state != last_state:
+                    self.logger.info('Image display acknowledgment: token=%s; state=%s', token, state)
+                    last_state = state
                 if status == 'loaded':
                     loaded = True
                     return status
                 if status in ('error', 'hidden'):
                     return status
                 time.sleep(0.1)
+            self.logger.warning('Image display acknowledgment timed out after %.1fs: token=%s; last_state=%s',
+                                wait_seconds, token, last_state)
             return 'unavailable'
         finally:
             if not loaded:
-                self.clear(key='image-lookup')
+                try:
+                    self.clear(key='image-lookup')
+                except requests.RequestException as exc:
+                    self.logger.warning('Image display cleanup failed: token=%s; %s', token, type(exc).__name__)
 
     def text(
         self, msg: str, *, on: Iterable[PanelSlot]=("top",), priority: int=50,

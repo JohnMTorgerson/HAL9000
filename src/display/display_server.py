@@ -383,6 +383,7 @@ async def clear_overlay(req: ClearRequest) -> dict:
 # A bounded, same-origin image cache also works when the display is on another
 # machine. HAL uploads only the image it is about to show, not remote URLs.
 image_loads: Dict[str, str] = {}
+image_visibility: Dict[str, str] = {}
 
 
 class ImageDisplayRequest(BaseModel):
@@ -393,7 +394,8 @@ class ImageDisplayRequest(BaseModel):
 
 class ImageLoadRequest(BaseModel):
     token: str = Field(min_length=32, max_length=32)
-    status: Literal['loaded', 'error']
+    status: Literal['received', 'loaded', 'error']
+    visibility: Literal['visible', 'hidden'] | None = None
 
 
 @app.post('/api/images/show')
@@ -422,6 +424,7 @@ async def show_lookup_image(req: ImageDisplayRequest):
             old.unlink(missing_ok=True)
     token = uuid.uuid4().hex
     image_loads.clear()
+    image_visibility.clear()
     image_loads[token] = 'pending'
     await push_overlay(PushRequest(type='image', src='/media/image-search/' + filename,
                                    slots=['top'], fit='cover', key='image-lookup', priority=80,
@@ -436,8 +439,11 @@ async def image_loaded(req: ImageLoadRequest):
             and req.token in image_loads):
         # One successful browser is enough; a broken secondary browser must not
         # overwrite confirmation from the working kiosk.
-        if image_loads[req.token] != 'loaded':
+        if (image_loads[req.token] != 'loaded'
+                and (req.status != 'received' or image_loads[req.token] == 'pending')):
             image_loads[req.token] = req.status
+            if req.visibility is not None:
+                image_visibility[req.token] = req.visibility
         return {'ok': True}
     return {'ok': False}
 
@@ -445,9 +451,11 @@ async def image_loaded(req: ImageLoadRequest):
 @app.get('/api/images/status/{token}')
 def image_status(token: str):
     render = compute_render()
+    status = image_loads.get(token, 'pending')
     if render['layout'] != 'split' or render['top'].load_token != token:
-        return {'status': 'hidden'}
-    return {'status': image_loads.get(token, 'pending')}
+        status = 'hidden'
+    return {'status': status, 'connected_browsers': len(clients),
+            'document_visibility': image_visibility.get(token)}
 
 
 # ---------------------------------------------

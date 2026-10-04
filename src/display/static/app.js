@@ -103,13 +103,34 @@
         if (panel.type === "image") {
             el = document.createElement("img");
             if (panel.load_token) {
-                const report = (status) => requestAnimationFrame(() => {
-                    if (!el.isConnected || !el.getClientRects().length) return;
-                    fetch('/api/images/loaded', {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({token: panel.load_token, status}),
-                    }).catch(() => {});
-                });
+                // A one-shot POST could be lost, and animation frames can pause
+                // in background tabs. Report decoded images independently of
+                // animation, retrying briefly while this exact node is shown.
+                const report = (status) => {
+                    const send = async (attempt = 0) => {
+                        if (!el.isConnected || !el.getClientRects().length) return;
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 750);
+                        try {
+                            const response = await fetch('/api/images/loaded', {
+                                method: 'POST', headers: {'Content-Type': 'application/json'},
+                                signal: controller.signal,
+                                body: JSON.stringify({token: panel.load_token, status,
+                                                      visibility: document.visibilityState}),
+                            });
+                            if (!response.ok) throw new Error('Image acknowledgment failed');
+                            // A false "ok" means the server no longer wants this
+                            // token, so it must not be retried either.
+                            await response.json();
+                        } catch (_) {
+                            if (attempt < 3) setTimeout(() => send(attempt + 1), 250);
+                        } finally {
+                            clearTimeout(timeout);
+                        }
+                    };
+                    setTimeout(send, 0); // Let renderSlot attach the new element.
+                };
+                report('received');
                 el.onload = () => report(el.naturalWidth ? 'loaded' : 'error');
                 el.onerror = () => report('error');
             }

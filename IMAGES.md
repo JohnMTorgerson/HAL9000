@@ -43,6 +43,8 @@ An unsupported model/tool configuration produces a spoken failure, not a crash.
 - “Hey HAL, what does the new iPhone look like?”
 - “Hey HAL, show me a picture of a 1968 Mustang fastback.”
 - “Show me another one.”
+- “Show me that Lotus Elise again.” (Reuses its saved image, including after a restart.)
+- “Try again.” (After a display failure, retries the same checked picture.)
 - “Go back to the previous picture.”
 - “Show me the convertible instead.”
 - “Close that picture.”
@@ -80,6 +82,12 @@ Search-tool calls have their own cost in addition to model usage. Search and
 vision requests each have a 45-second network timeout; the browser acknowledgment
 wait is eight seconds.
 
+Recall and display retry need only the ordinary conversation request to choose
+the action. They reuse image bytes locally, with no search, download, or vision
+request. A retry keeps the failed candidate for the remaining twenty-minute
+in-memory cache lifetime. Neither recall nor retry silently substitutes a
+different image if that exact picture cannot be displayed.
+
 Search and verification both receive the current date. They use current source
 evidence to establish recent model identity, without requiring that visually
 similar generations can be distinguished from pixels alone. A clear image of
@@ -96,9 +104,31 @@ refusals never trigger this repair.
 Images use centered `cover` sizing: they fill the panel without stretching, with
 edges cropped when the aspect ratios differ. They stay visible for two minutes.
 The image and its citation disappear together. Checked alternatives remain in memory for twenty
-minutes, or until a new successful search or explicit close. The display's disk
+minutes, or until a new successful search, recall, or explicit close. The display's disk
 cache retains at most twenty images and removes pictures older than a day when
 the next image is shown. It is excluded from Git and from update archives.
+
+Separately, HAL saves the exact normalized JPEG, description, original image URL,
+source credits, and a stable image ID in `data/image-history/` after a browser
+confirms display. This archive keeps the twenty most recently shown distinct
+images without a time expiry and survives restarts, explicit close, and display
+cache cleanup. Recalling an image refreshes its position in that list. HAL gets
+the archive's IDs and descriptions in its conversation context, not all the
+image bytes; the action record also includes the ID and original image URL.
+It works independently of `MEMORY_ENABLED`. These local files are ignored by Git.
+Delete that directory with HAL stopped to forget the saved pictures. Images
+shown before this update are not automatically imported from old logs. If a
+requested file is absent or damaged, HAL explains that the exact image is
+unavailable and offers a new search instead of quietly choosing another one.
+
+Display logs include the upload token, acknowledgment state (`pending`,
+`received`, `loaded`, or `error`), connected display WebSocket count, and reported
+browser tab visibility. `pending` means no browser report has arrived;
+`received` means the browser attached the image but has not confirmed loading.
+These are observations, not proof that a particular network component failed.
+The browser retries failed acknowledgment POSTs up to three times, within the
+existing eight-second client wait. It no longer depends on an animation frame
+to acknowledge an image, since background tabs can pause animation frames.
 
 Provider refusals are separate from empty results, unsupported backends, and
 technical failures. HAL speaks the provider's explanation when available and
@@ -107,8 +137,9 @@ content-filter responses, and structured refusals are handled before displaying
 an image. Refusals are logged and are not retried through another provider.
 HAL adds no content blacklist or independent moderation service.
 
-With `LLM_BACKEND=ollama`, image actions explain that image lookup is unavailable
-with Ollama. They do not create an OpenAI image client or make OpenAI image calls.
+With `LLM_BACKEND=ollama`, fresh searches explain that image lookup is unavailable
+with Ollama. Saved image recall still works locally. Neither creates an OpenAI
+image client or makes OpenAI image calls.
 The provider interface also gives future backends a place to implement lookup
 without changing display, caching, or conversation handling. Video is not included.
 
@@ -118,8 +149,11 @@ Automated tests cover the pinned SDK's HTTP payloads and response decoding using
 mocked API responses; source handling; batch vision selection; refusals at each
 stage; download/display failures; navigation; cache expiration; citation lifetime;
 unsupported backends; and the actual voice-loop function without audio hardware.
+Restart tests verify exact image bytes and citations, bounded archive retention,
+missing/corrupt file handling, and retrying without another provider lookup.
 The optional browser test exercises the real display server, browser load
-acknowledgment, and clickable citations (`HAL_BROWSER_TESTS=1`, with Playwright
+acknowledgment (including a deliberately dropped first acknowledgment), and
+clickable citations (`HAL_BROWSER_TESTS=1`, with Playwright
 and Chromium installed). Live search quality and account/model availability still
 need a first run with your own API account.
 

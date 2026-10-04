@@ -230,15 +230,15 @@ def test_refusal_during_recovery_stops_immediately(provider_factory):
     assert err.value.status == 'refused' and len(calls) == 2
 
 
-@pytest.mark.parametrize('user_input, reply', [
-    ('Hey Hal, can you show me that Lotus Elise again?', 'Certainly. Here it is again.'),
+@pytest.mark.parametrize('user_input, reply, action', [
+    ('Hey Hal, can you show me that Lotus Elise again?', 'Certainly. Here it is again.', 'recall'),
     ('Hey Hal, show me a picture of an X-29.',
-     'Here it is, the experimental Grumman X-29 with its distinctive forward-swept wings.'),
-    ('Could you please show me a photo of a blue bird?', 'Here you go.'),
+     'Here it is, the experimental Grumman X-29 with its distinctive forward-swept wings.', 'search'),
+    ('Could you please show me a photo of a blue bird?', 'Here you go.', 'search'),
 ])
-def test_false_image_success_is_repaired_to_an_actual_command(user_input, reply):
+def test_false_image_success_is_repaired_to_an_actual_command(user_input, reply, action):
     repaired = parse_image_request(repair_image_reply(user_input, reply))
-    assert repaired['action'] == 'search'
+    assert repaired['action'] == action
     assert any(subject in repaired['query'] for subject in ('Lotus Elise', 'X-29', 'blue bird'))
 
 

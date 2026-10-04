@@ -20,6 +20,7 @@ def disable_lifespan_and_reset_state():
     srv.overlays.clear()
     srv.clients.clear()
     srv.image_loads.clear()
+    srv.image_visibility.clear()
 
     # Reset slideshow base state
     srv.state["top"] = srv.Panel(type="image", src=f"{srv.SCREENS_DIR}/screen_06.png", fit="cover", bg="#000")
@@ -232,9 +233,21 @@ def test_upload_and_browser_acknowledgment_requires_current_visible_token(client
     first = client.post('/api/images/show', json=payload)
     assert first.status_code == 200
     token = first.json()['token']
-    assert client.get(f'/api/images/status/{token}').json()['status'] == 'pending'
+    assert client.get(f'/api/images/status/{token}').json() == {
+        'status': 'pending', 'connected_browsers': 0, 'document_visibility': None}
+    with client.websocket_connect('/ws') as ws:
+        ws.receive_json()
+        assert client.get(f'/api/images/status/{token}').json()['connected_browsers'] == 1
+        assert client.post('/api/images/loaded', json={
+            'token': token, 'status': 'received', 'visibility': 'hidden'}).json()['ok']
+        assert client.get(f'/api/images/status/{token}').json() == {
+            'status': 'received', 'connected_browsers': 1, 'document_visibility': 'hidden'}
     assert client.post('/api/images/loaded', json={'token': token, 'status': 'loaded'}).json()['ok']
     assert client.get(f'/api/images/status/{token}').json()['status'] == 'loaded'
+    # A late "received" report or a secondary browser's error cannot undo success.
+    for status in ('received', 'error'):
+        client.post('/api/images/loaded', json={'token': token, 'status': status})
+        assert client.get(f'/api/images/status/{token}').json()['status'] == 'loaded'
     # Re-showing the same cached file still needs a fresh acknowledgment.
     second = client.post('/api/images/show', json=payload).json()['token']
     assert second != token

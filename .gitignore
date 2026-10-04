@@ -21,3 +21,6 @@ memory.log*
 
 # Downloaded image-search cache (local display only)
 src/display/media/image-search/
+
+# Exact images and source history retained for recall across HAL restarts
+data/image-history/
