@@ -139,6 +139,8 @@ three seconds. Late snapshots cannot overwrite newer socket updates. The same
 page recovers when HAL's display server restarts, without a manual page reload.
 Connection and disconnection timestamps are written to `log.log`. A zero
 WebSocket count can coexist with a working display through HTTP state refreshes.
+Successful state and image-status GET polls are omitted from access logs;
+HTTP errors, server errors, and connection events remain logged.
 
 Provider refusals are separate from empty results, unsupported backends, and
 technical failures. HAL speaks the provider's explanation when available and

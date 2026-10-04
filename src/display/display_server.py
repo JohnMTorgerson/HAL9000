@@ -540,7 +540,24 @@ async def reaper() -> None:
 # ---------------------------------------------
 # Startup: kick off background tasks
 # ---------------------------------------------
+class QuietPollingAccessFilter(logging.Filter):
+    """Omit successful polling requests, retaining HTTP errors and other logs."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING or not isinstance(record.args, tuple) or len(record.args) != 5:
+            return True
+        _, method, path, _, status = record.args
+        if not isinstance(path, str) or not isinstance(status, int):
+            return True
+        path = path.split('?', 1)[0]
+        polling = path == '/api/state' or path.startswith('/api/images/status/')
+        return not (method == 'GET' and polling and 200 <= status < 400)
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
+    # Install after Uvicorn configures logging, for embedded and standalone use.
+    access_logger = logging.getLogger('uvicorn.access')
+    if not any(isinstance(f, QuietPollingAccessFilter) for f in access_logger.filters):
+        access_logger.addFilter(QuietPollingAccessFilter())
     asyncio.create_task(rotator())
     asyncio.create_task(reaper())
