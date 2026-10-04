@@ -8,6 +8,13 @@ The lower conversation panel expires normally, independently of the image.
 The selected source webpage and original image URL are also written to `log.log`
 as `IMAGE SHOWN` / `IMAGE CITATION` entries.
 
+The background slideshow uses an independent shuffled cycle for each pane.
+Each pane visits all of its distinct images before reshuffling, with no
+back-to-back repeat across cycle boundaries. Top and bottom image groups stay
+separate. Each pane changes every two minutes, staggered by one minute so they
+alternate instead of changing together. The initial pair is randomized too;
+the bottom pane changes first, one minute after startup.
+
 ## Install the update
 
 Extract the update at the repository root, preserving its `src/` directory:

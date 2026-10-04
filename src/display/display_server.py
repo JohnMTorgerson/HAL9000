@@ -20,6 +20,7 @@ import binascii
 import hashlib
 import io
 import logging
+import random
 import time
 import uuid
 from pathlib import Path
@@ -137,17 +138,14 @@ logger = logging.getLogger('HAL')
 # ---------------------------------------------
 # Slideshow + idle handling
 # ---------------------------------------------
-# How often to advance the slideshow images (seconds)
+# How often each pane advances (seconds); pane changes are staggered by half.
 ROTATE_SECONDS = 120
 
 # Lists of images for top/bottom panels. Change to your filenames.
 ROTATION = {
-    "top":    [f"{SCREENS_DIR}/screen_06.png", f"{SCREENS_DIR}/screen_04.png", f"{SCREENS_DIR}/screen_05.png", f"{SCREENS_DIR}/screen_06.png", f"{SCREENS_DIR}/screen_03.png"],
+    "top":    [f"{SCREENS_DIR}/screen_06.png", f"{SCREENS_DIR}/screen_04.png", f"{SCREENS_DIR}/screen_05.png", f"{SCREENS_DIR}/screen_03.png"],
     "bottom": [f"{SCREENS_DIR}/screen_01.png", f"{SCREENS_DIR}/screen_02.png", f"{SCREENS_DIR}/screen_08.png", f"{SCREENS_DIR}/screen_07.png", f"{SCREENS_DIR}/screen_00.png"],
 }
-
-# Current slideshow index into the ROTATION lists
-_slideshow_idx = 0
 
 # Idle reset: if no pushes happen for this many seconds, clear overlays (belt + suspenders)
 IDLE_RESET_SECS = 180
@@ -495,25 +493,45 @@ async def ws(ws: WebSocket) -> None:
 # 1) rotator: periodically advance the slideshow images
 # 2) reaper: expire overlays and perform idle reset
 # ---------------------------------------------
+def shuffled_images(images):
+    """Visit each distinct image once per shuffle, avoiding boundary repeats."""
+    images = list(dict.fromkeys(images))
+    previous = None
+    while images:
+        cycle = images.copy()
+        random.shuffle(cycle)
+        if len(cycle) > 1 and cycle[0] == previous:
+            other = random.randrange(1, len(cycle))
+            cycle[0], cycle[other] = cycle[other], cycle[0]
+        for image in cycle:
+            previous = image
+            yield image
+
+
 async def rotator() -> None:
     """
-    Every ROTATE_SECONDS, advance the slideshow 'state'.
+    Independently shuffle each pane, starting with a random pair immediately.
+    Each pane advances every ROTATE_SECONDS, staggered by half that interval.
     Overlays (if any) still win on top of this base state.
     """
-    global _slideshow_idx
+    cycles = {slot: shuffled_images(ROTATION.get(slot) or []) for slot in ("top", "bottom")}
+
+    def advance(slot):
+        image = next(cycles[slot], None)
+        if image is not None:
+            state[slot].type = "image"
+            state[slot].src = image
+
+    for slot in cycles:
+        advance(slot)
+    await broadcast_render()
+
     while True:
-        await asyncio.sleep(ROTATE_SECONDS)
-        _slideshow_idx += 1
-
-        # Update slideshow images for each slot (wrap around lists)
-        for slot in ("top", "bottom"):
-            imgs = ROTATION.get(slot) or []
-            if imgs:
-                state[slot].type = "image"
-                state[slot].src = imgs[_slideshow_idx % len(imgs)]
-
-        # Push new render (overlays may still be in effect)
-        await broadcast_render()
+        for slot in ("bottom", "top"):
+            await asyncio.sleep(ROTATE_SECONDS / 2)
+            advance(slot)
+            # Push new render (overlays may still be in effect).
+            await broadcast_render()
 
 
 async def reaper() -> None:

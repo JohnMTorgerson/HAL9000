@@ -26,8 +26,7 @@ def disable_lifespan_and_reset_state():
     srv.state["top"] = srv.Panel(type="image", src=f"{srv.SCREENS_DIR}/screen_06.png", fit="cover", bg="#000")
     srv.state["bottom"] = srv.Panel(type="image", src=f"{srv.SCREENS_DIR}/screen_01.png", fit="cover", bg="#000")
 
-    # Reset timers/counters
-    srv._slideshow_idx = 0
+    # Reset idle timer
     srv._last_activity_ts = srv.now()
 
 
