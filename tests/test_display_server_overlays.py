@@ -183,7 +183,7 @@ def test_fullscreen_beats_any_slot_overlays(client):
     assert s["bottom"]["text"] == "FS-100"
 
 
-def test_image_citation_stays_in_lower_text_with_live_logs_and_expires_with_image(monkeypatch, client):
+def test_image_citation_stays_in_top_panel_while_logs_expire_independently(monkeypatch, client):
     clock = {'now': 1000}
     monkeypatch.setattr(srv, 'now', lambda: clock['now'])
     citation = {'url': 'https://example.com/product', 'label': 'Example product'}
@@ -194,14 +194,16 @@ def test_image_citation_stays_in_lower_text_with_live_logs_and_expires_with_imag
     state = get_render(client)
     assert state['top']['type'] == 'image'
     assert state['bottom']['text'] == 'HAL: Here it is.'
-    assert state['bottom']['citations'] == [citation]
+    assert state['top']['citations'] == [citation]
+    assert not state['bottom']['citations']
     push(client, type='text', text='USER: Another one.', key='logs', slots=['bottom'], ttl_secs=30)
-    assert get_render(client)['bottom']['citations'] == [citation]
+    assert get_render(client)['top']['citations'] == [citation]
     clock['now'] = 1031
     state = get_render(client)
-    assert state['bottom']['type'] == 'text' and state['bottom']['citations'] == [citation]
+    assert state['top']['citations'] == [citation]
+    assert state['bottom']['type'] == 'image' and not state['bottom']['citations']
     clock['now'] = 1121
-    assert not get_render(client)['bottom']['citations']
+    assert not get_render(client)['top']['citations']
 
 
 def test_citation_updates_on_next_and_disappears_on_close_or_other_content(client):
@@ -209,13 +211,13 @@ def test_citation_updates_on_next_and_disappears_on_close_or_other_content(clien
         citation = {'url': f'https://example.com/{number}', 'label': f'Image {number}'}
         push(client, type='image', src=f'/media/{number}.jpg', key='image-lookup',
              citations=[citation], slots=['top'], priority=80)
-        assert get_render(client)['bottom']['citations'] == [citation]
+        assert get_render(client)['top']['citations'] == [citation]
     push(client, type='url', src='/static/map.html', key='map', slots=['top'], priority=80)
-    assert not get_render(client)['bottom']['citations']
+    assert not get_render(client)['top']['citations']
     clear(client, key='map')
-    assert get_render(client)['bottom']['citations']
+    assert get_render(client)['top']['citations']
     clear(client, key='image-lookup')
-    assert not get_render(client)['bottom']['citations']
+    assert not get_render(client)['top']['citations']
 
 
 def test_upload_and_browser_acknowledgment_requires_current_visible_token(client, tmp_path, monkeypatch):
@@ -238,7 +240,7 @@ def test_upload_and_browser_acknowledgment_requires_current_visible_token(client
     assert second != token
     assert not client.post('/api/images/loaded', json={'token': token, 'status': 'loaded'}).json()['ok']
     assert client.get(f'/api/images/status/{second}').json()['status'] == 'pending'
-    assert get_render(client)['top']['fit'] == 'contain'
+    assert get_render(client)['top']['fit'] == 'cover'
     assert len(list((tmp_path / 'media' / 'image-search').glob('*.jpg'))) == 1
     clear(client, key='image-lookup')
     assert client.get(f'/api/images/status/{second}').json()['status'] == 'hidden'

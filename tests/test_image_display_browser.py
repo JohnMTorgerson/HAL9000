@@ -1,7 +1,6 @@
 """Optional real-browser coverage: HAL_BROWSER_TESTS=1 pytest this_file.py."""
 import io
 import os
-from pathlib import Path
 import socket
 import threading
 import time
@@ -50,28 +49,36 @@ def test_image_load_and_pinned_clickable_citation_in_real_browser():
                 page.wait_for_selector('#top img')
                 display.text('\n'.join(f'Conversation line {n}' for n in range(30)),
                              on=('bottom',), priority=70, key='logs')
-                citations = [{'url': 'https://example.com/phone', 'label': 'Example product page'}]
+                citations = [{'url': 'https://www.example.com/phone?model=1', 'label': 'Example product page'}]
                 assert display.present_image(raw.getvalue(), citations=citations) == 'loaded'
-                link = page.locator('#bottom .citations a')
-                assert link.inner_text() == 'Example product page'
+                link = page.locator('#top .citations a')
+                assert link.inner_text() == 'example.com'
                 assert link.get_attribute('href') == citations[0]['url']
                 assert link.get_attribute('target') == '_blank'
-                assert page.locator('#top .citations').count() == 0
-                box, lower = link.bounding_box(), page.locator('#bottom').bounding_box()
-                assert box['y'] >= lower['y'] and box['y'] + box['height'] <= lower['y'] + lower['height']
-                assert page.locator('#top img').evaluate("el => getComputedStyle(el).objectFit") == 'contain'
+                assert page.locator('#bottom .citations').count() == 0
+                box, upper = link.bounding_box(), page.locator('#top').bounding_box()
+                assert box['y'] >= upper['y']
+                assert 0 < upper['y'] + upper['height'] - box['y'] - box['height'] < 40
+                assert 0 < upper['x'] + upper['width'] - box['x'] - box['width'] < 40
+                assert page.locator('#top img').evaluate("el => getComputedStyle(el).objectFit") == 'cover'
                 display.text('HAL: Here it is.', on=('bottom',), priority=70, key='logs')
                 page.wait_for_function("document.querySelector('#bottom .text-content').textContent === 'HAL: Here it is.'")
-                assert link.inner_text() == 'Example product page'
+                assert link.inner_text() == 'example.com'
                 if os.getenv('HAL_BROWSER_SCREENSHOT'):
                     page.screenshot(path=os.environ['HAL_BROWSER_SCREENSHOT'])
+                # Expiring the conversation cannot strand a credit in the bottom pane.
+                display.clear(key='logs')
+                page.wait_for_selector('#bottom img')
+                assert page.locator('#bottom .citations').count() == 0
+                assert link.inner_text() == 'example.com'
                 # Reusing the same picture produces a fresh load acknowledgment
                 # and refreshes its source; stale acknowledgments cannot win.
                 assert display.present_image(raw.getvalue(), citations=[{
                     'url': 'https://example.com/other', 'label': '<img src=x onerror=alert(1)>'}]) == 'loaded'
-                assert page.locator('#bottom .citations img').count() == 0
+                assert page.locator('#top .citations img').count() == 0
+                assert link.inner_text() == 'example.com'
                 display.clear(key='image-lookup')
-                page.wait_for_function("document.querySelectorAll('#bottom .citations a').length === 0")
+                page.wait_for_function("document.querySelectorAll('.citations a').length === 0")
                 assert not errors
             finally:
                 browser.close()

@@ -52,20 +52,30 @@
         }
     }
 
-    // Create a content element for a Panel
     function updateText(el, panel) {
         let words = el.querySelector('.text-content');
-        let sources = el.querySelector('.citations');
         if (!words) {
             words = document.createElement('div');
             words.className = 'text-content';
-            sources = document.createElement('div');
-            sources.className = 'citations';
-            el.append(words, sources);
+            el.appendChild(words);
         }
         if (words.textContent !== (panel.text || '')) {
             words.textContent = panel.text || '';
             words.scrollTop = words.scrollHeight;
+        }
+    }
+
+    function updateCitations(container, panel) {
+        let sources = container.querySelector('.citations');
+        if (panel.type !== 'image' || !panel.citations?.length) {
+            if (sources) sources.remove();
+            return;
+        }
+        if (!sources) {
+            sources = document.createElement('div');
+            sources.className = 'citations';
+            sources.setAttribute('aria-label', 'Image sources');
+            container.appendChild(sources);
         }
         const citations = JSON.stringify(panel.citations || []);
         if (sources.dataset.citations === citations) return;
@@ -79,7 +89,8 @@
                 link.href = url.href;
                 link.target = '_blank';
                 link.rel = 'noopener noreferrer';
-                link.textContent = source.label || url.hostname;
+                // Keep the visible credit compact; the destination stays exact.
+                link.textContent = url.hostname.replace(/^www\./i, '');
                 link.title = url.href;
                 sources.appendChild(link);
             } catch (_) { /* Malformed source data is never HTML. */ }
@@ -127,11 +138,12 @@
 
         // If nothing changed structurally, keep the DOM and do minimal in-place updates
         if (samePanel(prevPanel, nextPanel)) {
-            // Only case we want to touch is text updates (no animation)
+            // Update text and credits without replaying the image animation.
             if (nextPanel.type === "text") {
                 const existing = container.querySelector(".text");
                 if (existing) updateText(existing, nextPanel);
             }
+            updateCitations(container, nextPanel);
             return;
         }
 
@@ -151,6 +163,7 @@
         }
 
         container.appendChild(content);
+        updateCitations(container, nextPanel);
     }
 
     // Main render entrypoint

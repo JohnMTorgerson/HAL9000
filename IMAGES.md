@@ -1,8 +1,10 @@
 # Image lookup
 
 HAL can find an existing picture, check its relevance with vision, and display
-it in the upper panel. Clickable source citations stay in the lower text panel
-alongside the conversation, including after the ordinary log overlay times out.
+it in the upper panel. Clickable source citations sit in the bottom-right corner
+of the image panel on a translucent dark background. The visible links show only
+the source domains (without `www.`); each still opens the full source webpage.
+The lower conversation panel expires normally, independently of the image.
 The selected source webpage and original image URL are also written to `log.log`
 as `IMAGE SHOWN` / `IMAGE CITATION` entries.
 
@@ -72,8 +74,9 @@ Search-tool calls have their own cost in addition to model usage. There are no
 automatic LLM retries. Search and vision requests each have a 45-second network
 timeout; the browser acknowledgment wait is eight seconds.
 
-Images use `contain` sizing and stay visible for two minutes. The image and its
-citation disappear together. Checked alternatives remain in memory for twenty
+Images use centered `cover` sizing: they fill the panel without stretching, with
+edges cropped when the aspect ratios differ. They stay visible for two minutes.
+The image and its citation disappear together. Checked alternatives remain in memory for twenty
 minutes, or until a new successful search or explicit close. The display's disk
 cache retains at most twenty images and removes pictures older than a day when
 the next image is shown. It is excluded from Git and from update archives.
@@ -100,6 +103,13 @@ The optional browser test exercises the real display server, browser load
 acknowledgment, and clickable citations (`HAL_BROWSER_TESTS=1`, with Playwright
 and Chromium installed). Live search quality and account/model availability still
 need a first run with your own API account.
+
+## Image layout update
+
+The update moves image citations from the conversation panel onto the image and
+switches image fitting to centered `cover` sizing. There are no new dependencies.
+After updating the display files, restart the display server and reload the
+display browser to apply the layout change.
 
 References:
 - https://developers.openai.com/api/docs/guides/tools-web-search

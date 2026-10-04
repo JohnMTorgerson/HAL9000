@@ -216,12 +216,7 @@ def compute_render() -> dict:
             else:
                 render_bot = winner.panel
 
-    # Citations travel with the actual winning image. Logs continue to update
-    # underneath, and their shorter TTL cannot hide a still-visible image credit.
-    if render_top.citations:
-        if render_bot.type != 'text':
-            render_bot = Panel(type='text', text='', bg='#000')
-        render_bot = render_bot.model_copy(update={'citations': render_top.citations})
+    # Each panel owns its citations; an image never keeps the log pane open.
     return {"layout": "split", "top": render_top, "bottom": render_bot}
 
 
@@ -429,7 +424,7 @@ async def show_lookup_image(req: ImageDisplayRequest):
     image_loads.clear()
     image_loads[token] = 'pending'
     await push_overlay(PushRequest(type='image', src='/media/image-search/' + filename,
-                                   slots=['top'], fit='contain', key='image-lookup', priority=80,
+                                   slots=['top'], fit='cover', key='image-lookup', priority=80,
                                    ttl_secs=req.ttl_secs, citations=req.citations, load_token=token))
     return {'ok': True, 'token': token}
 
