@@ -57,3 +57,6 @@ urllib3==2.5.0
 
 # Local Whisper wake detection (query transcription remains openai-whisper).
 -r requirements-wake.txt
+
+# Image decoding for image lookup and display.
+-r requirements-images.txt

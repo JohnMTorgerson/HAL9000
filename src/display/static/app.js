@@ -24,6 +24,7 @@
 
         // For images/URLs, compare the "src"
         if ((a.type === "image" || a.type === "url") && a.src !== b.src) return false;
+        if (a.load_token !== b.load_token) return false;
 
         // For text, treat structure as "same" even if the text changed
         // (we'll update text content in-place without animation)
@@ -52,10 +53,55 @@
     }
 
     // Create a content element for a Panel
+    function updateText(el, panel) {
+        let words = el.querySelector('.text-content');
+        let sources = el.querySelector('.citations');
+        if (!words) {
+            words = document.createElement('div');
+            words.className = 'text-content';
+            sources = document.createElement('div');
+            sources.className = 'citations';
+            el.append(words, sources);
+        }
+        if (words.textContent !== (panel.text || '')) {
+            words.textContent = panel.text || '';
+            words.scrollTop = words.scrollHeight;
+        }
+        const citations = JSON.stringify(panel.citations || []);
+        if (sources.dataset.citations === citations) return;
+        sources.dataset.citations = citations;
+        sources.replaceChildren();
+        for (const source of panel.citations || []) {
+            try {
+                const url = new URL(source.url);
+                if (!['https:', 'http:'].includes(url.protocol)) continue;
+                const link = document.createElement('a');
+                link.href = url.href;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = source.label || url.hostname;
+                link.title = url.href;
+                sources.appendChild(link);
+            } catch (_) { /* Malformed source data is never HTML. */ }
+        }
+        sources.hidden = !sources.childElementCount;
+    }
+
     function createContentEl(panel) {
         let el;
         if (panel.type === "image") {
             el = document.createElement("img");
+            if (panel.load_token) {
+                const report = (status) => requestAnimationFrame(() => {
+                    if (!el.isConnected || !el.getClientRects().length) return;
+                    fetch('/api/images/loaded', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({token: panel.load_token, status}),
+                    }).catch(() => {});
+                });
+                el.onload = () => report(el.naturalWidth ? 'loaded' : 'error');
+                el.onerror = () => report('error');
+            }
             el.src = panel.src || "";
             el.className = panel.fit === "contain" ? "contain" : "cover";
         } else if (panel.type === "url") {
@@ -64,7 +110,7 @@
         } else {
             el = document.createElement("div");
             el.className = "text";
-            el.textContent = panel.text || "";
+            updateText(el, panel);
         }
         // Restrict fade animation to the content element only (never the container)
         el.classList.add("fade");
@@ -84,9 +130,7 @@
             // Only case we want to touch is text updates (no animation)
             if (nextPanel.type === "text") {
                 const existing = container.querySelector(".text");
-                if (existing && existing.textContent !== (nextPanel.text || "")) {
-                    existing.textContent = nextPanel.text || "";
-                }
+                if (existing) updateText(existing, nextPanel);
             }
             return;
         }

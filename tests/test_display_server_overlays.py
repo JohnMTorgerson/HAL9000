@@ -19,6 +19,7 @@ def disable_lifespan_and_reset_state():
     # Reset overlays & clients
     srv.overlays.clear()
     srv.clients.clear()
+    srv.image_loads.clear()
 
     # Reset slideshow base state
     srv.state["top"] = srv.Panel(type="image", src=f"{srv.SCREENS_DIR}/screen_06.png", fit="cover", bg="#000")
@@ -180,3 +181,78 @@ def test_fullscreen_beats_any_slot_overlays(client):
     assert s["layout"] == "fullscreen"
     assert s["top"]["text"] == "FS-100"
     assert s["bottom"]["text"] == "FS-100"
+
+
+def test_image_citation_stays_in_lower_text_with_live_logs_and_expires_with_image(monkeypatch, client):
+    clock = {'now': 1000}
+    monkeypatch.setattr(srv, 'now', lambda: clock['now'])
+    citation = {'url': 'https://example.com/product', 'label': 'Example product'}
+    push(client, type='image', src='/media/test.jpg', key='image-lookup',
+         citations=[citation], slots=['top'], priority=80, ttl_secs=120)
+    push(client, type='text', text='HAL: Here it is.', key='logs', slots=['bottom'],
+         priority=70, ttl_secs=30)
+    state = get_render(client)
+    assert state['top']['type'] == 'image'
+    assert state['bottom']['text'] == 'HAL: Here it is.'
+    assert state['bottom']['citations'] == [citation]
+    push(client, type='text', text='USER: Another one.', key='logs', slots=['bottom'], ttl_secs=30)
+    assert get_render(client)['bottom']['citations'] == [citation]
+    clock['now'] = 1031
+    state = get_render(client)
+    assert state['bottom']['type'] == 'text' and state['bottom']['citations'] == [citation]
+    clock['now'] = 1121
+    assert not get_render(client)['bottom']['citations']
+
+
+def test_citation_updates_on_next_and_disappears_on_close_or_other_content(client):
+    for number in (1, 2):
+        citation = {'url': f'https://example.com/{number}', 'label': f'Image {number}'}
+        push(client, type='image', src=f'/media/{number}.jpg', key='image-lookup',
+             citations=[citation], slots=['top'], priority=80)
+        assert get_render(client)['bottom']['citations'] == [citation]
+    push(client, type='url', src='/static/map.html', key='map', slots=['top'], priority=80)
+    assert not get_render(client)['bottom']['citations']
+    clear(client, key='map')
+    assert get_render(client)['bottom']['citations']
+    clear(client, key='image-lookup')
+    assert not get_render(client)['bottom']['citations']
+
+
+def test_upload_and_browser_acknowledgment_requires_current_visible_token(client, tmp_path, monkeypatch):
+    import base64
+    import io
+    from PIL import Image
+    monkeypatch.setattr(srv, 'BASE', tmp_path)
+    raw = io.BytesIO()
+    Image.new('RGB', (200, 100), 'red').save(raw, format='JPEG')
+    payload = {'data': base64.b64encode(raw.getvalue()).decode(),
+               'citations': [{'url': 'https://example.com/source', 'label': 'Source'}]}
+    first = client.post('/api/images/show', json=payload)
+    assert first.status_code == 200
+    token = first.json()['token']
+    assert client.get(f'/api/images/status/{token}').json()['status'] == 'pending'
+    assert client.post('/api/images/loaded', json={'token': token, 'status': 'loaded'}).json()['ok']
+    assert client.get(f'/api/images/status/{token}').json()['status'] == 'loaded'
+    # Re-showing the same cached file still needs a fresh acknowledgment.
+    second = client.post('/api/images/show', json=payload).json()['token']
+    assert second != token
+    assert not client.post('/api/images/loaded', json={'token': token, 'status': 'loaded'}).json()['ok']
+    assert client.get(f'/api/images/status/{second}').json()['status'] == 'pending'
+    assert get_render(client)['top']['fit'] == 'contain'
+    assert len(list((tmp_path / 'media' / 'image-search').glob('*.jpg'))) == 1
+    clear(client, key='image-lookup')
+    assert client.get(f'/api/images/status/{second}').json()['status'] == 'hidden'
+
+
+@pytest.mark.parametrize('url', ['javascript:alert(1)', 'file:///secret', 'https://user:pass@example.com'])
+def test_citation_links_reject_active_schemes_and_credentials(client, url):
+    assert client.post('/api/push', json={'type': 'image', 'src': '/media/test.jpg',
+        'citations': [{'url': url, 'label': 'test'}]}).status_code == 422
+
+
+def test_invalid_upload_does_not_replace_current_image(client):
+    push(client, type='image', src='/media/good.jpg', key='image-lookup')
+    response = client.post('/api/images/show', json={
+        'data': 'not base64', 'citations': [{'url': 'https://example.com', 'label': 'Source'}]})
+    assert response.status_code == 400
+    assert get_render(client)['top']['src'] == '/media/good.jpg'

@@ -3,6 +3,8 @@ from dotenv import load_dotenv
 import requests
 from typing import Iterable, Optional, Literal, Dict, Any
 import json
+import base64
+import time
 from urllib.parse import quote
 
 load_dotenv()
@@ -68,6 +70,32 @@ class DisplayClient:
         return r.json()
 
     # -------- conveniences --------
+    def present_image(self, data: bytes, *, citations: list, ttl=120, wait_seconds=8):
+        """Return loaded only after a browser confirms the visible image loaded."""
+        response = self._s.post(f'{self.base}/api/images/show', json={
+            'data': base64.b64encode(data).decode('ascii'),
+            'citations': citations, 'ttl_secs': ttl,
+        }, timeout=self.timeout)
+        response.raise_for_status()
+        token = response.json()['token']
+        deadline = time.monotonic() + wait_seconds
+        loaded = False
+        try:
+            while time.monotonic() < deadline:
+                response = self._s.get(f'{self.base}/api/images/status/{token}', timeout=self.timeout)
+                response.raise_for_status()
+                status = response.json()['status']
+                if status == 'loaded':
+                    loaded = True
+                    return status
+                if status in ('error', 'hidden'):
+                    return status
+                time.sleep(0.1)
+            return 'unavailable'
+        finally:
+            if not loaded:
+                self.clear(key='image-lookup')
+
     def text(
         self, msg: str, *, on: Iterable[PanelSlot]=("top",), priority: int=50,
         ttl: Optional[int]=120, key: Optional[str]=None, fullscreen: bool=False,

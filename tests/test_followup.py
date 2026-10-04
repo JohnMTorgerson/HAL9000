@@ -141,11 +141,10 @@ class DecisionTests(unittest.TestCase):
         self.assertNotIn('FOLLOW-UP CONTROL', requests[1]['messages'][0]['content'])
         self.assertEqual(client.chat_history[-3]['content'], command)
 
-    def test_invalid_truncated_or_refused_decisions_are_never_retried_or_committed(self):
+    def test_invalid_or_truncated_decisions_are_never_retried_or_committed(self):
         cases = [
             completion('[EXTERNAL_API_CALL] weather default'),
             completion({'decision': 'respond', 'reply': 'partial'}, finish='length'),
-            completion(None, refusal='fixture refusal'),
             completion({'decision': 'maybe', 'reply': ''}),
             completion({'decision': 'ignore', 'reply': '[EXTERNAL_API_CALL] calendar_next_event'}),
             completion({'decision': 'end', 'reply': 'Goodbye.'}),

@@ -23,6 +23,7 @@ from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
+from image_lookup import IMAGE_MARKER
 
 
 def load_hal_function(name, namespace):
@@ -250,7 +251,7 @@ class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
             'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager',
-            'play_audio', 'handle_api_call', 'time')}
+            'play_audio', 'handle_api_call', 'time', 'images')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
             'sys': sys, 're': re, 'shlex': shlex, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
@@ -261,6 +262,7 @@ class MainLoopTests(unittest.TestCase):
             'AudioOverflowError': AudioOverflowError,
             'parse_song_request': parse_song_request, 'SongRequestError': SongRequestError,
             'PLAY_SONG_MARKER': PLAY_SONG_MARKER, 'DAISY_PATH': DAISY_PATH,
+            'IMAGE_MARKER': IMAGE_MARKER,
             'SONG_PAUSE_SECONDS': SONG_PAUSE_SECONDS, 'SONG_FAILURE_REPLY': SONG_FAILURE_REPLY,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
             'explicitly_addresses_hal': explicitly_addresses_hal,
@@ -268,6 +270,8 @@ class MainLoopTests(unittest.TestCase):
         })
         namespace['stt'].transcribe.return_value = 'Hey HAL, are you there?'
         namespace['stt'].mode = 'static'
+        namespace['llm'].last_refusal = False
+        namespace['images'].context.return_value = ''
         namespace['voice_input'].last_speech_end_at = None
         namespace['handle_api_call'].return_value = 'service result'
         return namespace, load_hal_function('run', namespace)

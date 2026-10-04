@@ -18,3 +18,6 @@ data/memory/
 memory.json*
 recent_conversation.json*
 memory.log*
+
+# Downloaded image-search cache (local display only)
+src/display/media/image-search/

@@ -23,6 +23,7 @@ from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from speech_logging import SpeechFormatter
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
+from image_lookup import IMAGE_MARKER, ImageWorkflow, make_image_provider
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -153,7 +154,7 @@ voice_input = VoiceInput.from_env(logger, device_selector=lambda: get_default_de
 # ------------------------------------------------------------
 # LLM Configuration
 # ------------------------------------------------------------
-LLM_BACKEND = os.getenv("LLM_BACKEND", "openai")
+LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").strip().lower()
 memory = ConversationMemory.from_env(logger, max_history=int(os.getenv("LLM_MAX_HISTORY")))
 if LLM_BACKEND == "openai":
     llm = LLMClient(
@@ -174,6 +175,8 @@ elif LLM_BACKEND == "ollama":
 else:
     llm = None
     raise ValueError(f"Unknown LLM Backend: {LLM_BACKEND}")
+
+images = ImageWorkflow(make_image_provider(llm, logger), display, logger=logger)
 
 if followup_settings.enabled and LLM_BACKEND != 'openai':
     raise ValueError('FOLLOWUP_ENABLED requires LLM_BACKEND=openai with structured-output support.')
@@ -264,6 +267,7 @@ def run():
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
             # get HAL's response from LLM
+            llm.image_context = images.context()
             llm.begin_turn()
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
@@ -294,7 +298,8 @@ def run():
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
             # first testing if the query looks like a factual question about a named entity we can search for
-            if (not hal_reply.lstrip().startswith(PLAY_SONG_MARKER) and
+            if (not llm.last_refusal and
+                    not hal_reply.lstrip().startswith((PLAY_SONG_MARKER, IMAGE_MARKER)) and
                     re.search(r"(i\s+don.?t\s+know|i\s+don.?t\s+have|i.?m\s+sorry.*can.?t\s+do)", hal_reply.strip(), re.I)):
                 named_entities = extract_named_entities(user_input)
                 if DEBUG_ON:
@@ -308,7 +313,7 @@ def run():
                     logger.debug("Either no named entities found or question was not parsed as factual. NOT forcing wikipedia search")
 
             # keep handling API calls until HAL gives a final answer
-            while hal_reply.startswith("[EXTERNAL_API_CALL]"):
+            while not llm.last_refusal and hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.display("HAL: Just a moment...", extra={'speech_role': 'hal'})
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
                            triggered_at=triggered_at, capture_ready_at=capture_ready_at,
@@ -334,12 +339,25 @@ def run():
                 hal_reply = llm.get_response(enriched_prompt)
                 logger.info('Timing: follow-up LLM response %.3fs.', time.perf_counter() - stage_started)
 
+            action_result = None
+            image_result = None
+            if not llm.last_refusal and hal_reply.lstrip().startswith(IMAGE_MARKER):
+                def image_wait():
+                    nonlocal first_response
+                    logger.display('HAL: Just a moment.', extra={'speech_role': 'hal'})
+                    play_audio('HAL-clips/just_a_moment_normalized.aiff', label='acknowledgment',
+                               triggered_at=triggered_at, capture_ready_at=capture_ready_at,
+                               speech_ended_at=speech_ended_at, first_response=first_response)
+                    first_response = False
+                image_result = images.handle_reply(hal_reply, on_search=image_wait)
+                hal_reply = image_result.reply
+                action_result = image_result.action_result
+
             # A local song command has its own acknowledgment. Never send the
             # command/JSON to Piper or play the external-API waiting clip.
             song = None
-            action_result = None
             try:
-                song = parse_song_request(hal_reply)
+                song = parse_song_request(hal_reply) if image_result is None and not llm.last_refusal else None
                 if song is not None:
                     if not DAISY_PATH.is_file():
                         raise OSError(f'Song recording is missing: {DAISY_PATH}')

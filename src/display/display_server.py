@@ -15,16 +15,21 @@ Why this architecture?
 """
 
 import asyncio
+import base64
+import binascii
+import hashlib
+import io
 import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Literal
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.encoders import jsonable_encoder  # <-- Option A: encode Pydantic -> JSON-able
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from image_files import MAX_IMAGE_BYTES, web_url
 
 # ---------------------------------------------
 # Type aliases for clarity (useful in signatures)
@@ -52,12 +57,26 @@ SCREENS_DIR = "/media/screens"
 # Panel model: describes WHAT to render in a slot
 # The browser decides HOW to draw it (img/iframe/text)
 # ---------------------------------------------
+class Citation(BaseModel):
+    url: str
+    label: str = Field(max_length=200)
+
+    @field_validator('url')
+    @classmethod
+    def validate_url(cls, value):
+        if not web_url(value):
+            raise ValueError('Citation must be an HTTP(S) webpage URL')
+        return value
+
+
 class Panel(BaseModel):
     type: ContentType                 # "image", "text", or "url"
     src: Optional[str] = None         # image path or URL, or iframe URL when type="url"
     text: Optional[str] = None        # used when type="text"
     fit: Literal["cover", "contain"] = "cover"  # image object-fit behavior
     bg: str = "#000"                  # background color (e.g., "#000" black)
+    citations: List[Citation] = Field(default_factory=list, max_length=6)
+    load_token: Optional[str] = None
 
 
 # ---------------------------------------------
@@ -190,12 +209,19 @@ def compute_render() -> dict:
         # Candidates that explicitly target this slot
         cands = [o for o in valid if slot in o.slots]
         if cands:
-            winner = sorted(cands, key=lambda o: o.priority, reverse=True)[0]
+            # Most recently pushed overlay wins ties (including image -> map).
+            winner = max(enumerate(cands), key=lambda pair: (pair[1].priority, pair[0]))[1]
             if slot == "top":
                 render_top = winner.panel
             else:
                 render_bot = winner.panel
 
+    # Citations travel with the actual winning image. Logs continue to update
+    # underneath, and their shorter TTL cannot hide a still-visible image credit.
+    if render_top.citations:
+        if render_bot.type != 'text':
+            render_bot = Panel(type='text', text='', bg='#000')
+        render_bot = render_bot.model_copy(update={'citations': render_top.citations})
     return {"layout": "split", "top": render_top, "bottom": render_bot}
 
 
@@ -253,6 +279,8 @@ class PushRequest(BaseModel):
     text: Optional[str] = None
     fit: Literal["cover", "contain"] = "cover"
     bg: str = "#000"
+    citations: List[Citation] = Field(default_factory=list, max_length=6)
+    load_token: Optional[str] = None
 
     # Where/how to show it
     slots: Optional[List[PanelSlot]] = None  # default ["top"] unless fullscreen=True
@@ -279,11 +307,14 @@ async def push_overlay(req: PushRequest) -> dict:
         for o in overlays:
             if o.key == req.key:
                 # Update properties in place
-                o.panel = Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg)
+                o.panel = Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg,
+                                citations=req.citations, load_token=req.load_token)
                 o.priority = req.priority
                 o.fullscreen = req.fullscreen
                 o.slots = {"top", "bottom"} if req.fullscreen else set(req.slots or ["top"])
                 o.expires_at = (now() + req.ttl_secs) if req.ttl_secs else None
+                overlays.remove(o)
+                overlays.append(o)
                 await broadcast_render()
                 return {"ok": True, "id": o.id}
 
@@ -291,7 +322,8 @@ async def push_overlay(req: PushRequest) -> dict:
     slots = {"top", "bottom"} if req.fullscreen else set(req.slots or ["top"])
     overlay = Overlay(
         slots=slots,
-        panel=Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg),
+        panel=Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg,
+                    citations=req.citations, load_token=req.load_token),
         priority=req.priority,
         expires_at=(now() + req.ttl_secs) if req.ttl_secs else None,
         fullscreen=req.fullscreen,
@@ -351,6 +383,76 @@ async def clear_overlay(req: ClearRequest) -> dict:
     if changed:
         await broadcast_render()
     return {"ok": True, "changed": changed}
+
+
+# A bounded, same-origin image cache also works when the display is on another
+# machine. HAL uploads only the image it is about to show, not remote URLs.
+image_loads: Dict[str, str] = {}
+
+
+class ImageDisplayRequest(BaseModel):
+    data: str = Field(max_length=12 * 1024 * 1024)
+    citations: List[Citation] = Field(min_length=1, max_length=6)
+    ttl_secs: int = Field(default=120, ge=10, le=600)
+
+
+class ImageLoadRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=32)
+    status: Literal['loaded', 'error']
+
+
+@app.post('/api/images/show')
+async def show_lookup_image(req: ImageDisplayRequest):
+    try:
+        from PIL import Image
+        data = base64.b64decode(req.data, validate=True)
+        if not data or len(data) > MAX_IMAGE_BYTES:
+            raise ValueError('Invalid image size')
+        with Image.open(io.BytesIO(data)) as im:
+            if im.format != 'JPEG' or not (64 <= min(im.size) <= max(im.size) <= 1600):
+                raise ValueError('Expected a normalized JPEG')
+            im.verify()
+    except (ValueError, OSError, binascii.Error) as exc:
+        raise HTTPException(400, 'Invalid image data') from exc
+    except ImportError as exc:
+        raise HTTPException(503, 'Install requirements-images.txt on the display server') from exc
+    cache = BASE / 'media' / 'image-search'
+    cache.mkdir(parents=True, exist_ok=True)
+    filename = hashlib.sha256(data).hexdigest() + '.jpg'
+    path = cache / filename
+    path.write_bytes(data)
+    # Keep at most twenty images and remove files older than one day.
+    for index, old in enumerate(sorted(cache.glob('*.jpg'), key=lambda p: p.stat().st_mtime, reverse=True)):
+        if old != path and (index >= 20 or time.time() - old.stat().st_mtime > 86400):
+            old.unlink(missing_ok=True)
+    token = uuid.uuid4().hex
+    image_loads.clear()
+    image_loads[token] = 'pending'
+    await push_overlay(PushRequest(type='image', src='/media/image-search/' + filename,
+                                   slots=['top'], fit='contain', key='image-lookup', priority=80,
+                                   ttl_secs=req.ttl_secs, citations=req.citations, load_token=token))
+    return {'ok': True, 'token': token}
+
+
+@app.post('/api/images/loaded')
+async def image_loaded(req: ImageLoadRequest):
+    render = compute_render()
+    if (render['layout'] == 'split' and render['top'].load_token == req.token
+            and req.token in image_loads):
+        # One successful browser is enough; a broken secondary browser must not
+        # overwrite confirmation from the working kiosk.
+        if image_loads[req.token] != 'loaded':
+            image_loads[req.token] = req.status
+        return {'ok': True}
+    return {'ok': False}
+
+
+@app.get('/api/images/status/{token}')
+def image_status(token: str):
+    render = compute_render()
+    if render['layout'] != 'split' or render['top'].load_token != token:
+        return {'status': 'hidden'}
+    return {'status': image_loads.get(token, 'pending')}
 
 
 # ---------------------------------------------
