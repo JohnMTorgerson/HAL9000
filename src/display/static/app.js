@@ -9,6 +9,9 @@
     const badge = document.getElementById("badge"); // optional status badge
 
     let ws;
+    let wsStartedAt = 0;
+    let socketRenderCount = 0;
+    let stateRequestPending = false;
     let prev = null; // previous render payload (deep-frozen snapshot)
 
     // ---- Utilities ----
@@ -202,47 +205,94 @@
         prev = deepClone(payload);
     }
 
-    // ---- WebSocket wiring ----
+    // ---- Display connection and recovery ----
     function connect() {
+        // A socket can stay CONNECTING/CLOSING without delivering onclose for
+        // a long time after a server restart. Do not depend on that event to
+        // schedule the next attempt, and ignore callbacks from replaced sockets.
+        if (ws && (ws.readyState === WebSocket.OPEN ||
+                   (ws.readyState === WebSocket.CONNECTING &&
+                    performance.now() - wsStartedAt < 3000))) return;
+        const previous = ws;
+        ws = null;
+        if (previous) {
+            try { previous.close(); } catch (_) { }
+        }
         const proto = location.protocol === "https:" ? "wss" : "ws";
         const url = `${proto}://${location.host}/ws`;
-        ws = new WebSocket(url);
+        let socket;
+        try {
+            socket = new WebSocket(url);
+        } catch (_) {
+            return; // The periodic connection check will try again.
+        }
+        ws = socket;
+        wsStartedAt = performance.now();
 
-        ws.onopen = () => setBadge("Connected", "ok");
+        socket.onopen = () => {
+            if (socket === ws) setBadge("Connected", "ok");
+        };
 
-        ws.onmessage = (evt) => {
+        socket.onmessage = (evt) => {
+            if (socket !== ws) return;
             try {
                 const msg = JSON.parse(evt.data);
                 if (msg.type === "render" && msg.payload) {
                     render(msg.payload);
+                    socketRenderCount += 1;
                 }
             } catch (e) {
                 console.error("Bad WS message", e);
             }
         };
 
-        ws.onclose = () => {
-            setBadge("Disconnected", "error");
-            // Retry with backoff
-            setTimeout(connect, 1000);
+        socket.onclose = () => {
+            if (socket === ws) setBadge("Reconnecting", "error");
         };
 
-        ws.onerror = () => {
-            try { ws.close(); } catch (_) { }
+        socket.onerror = () => {
+            if (socket === ws) {
+                try { socket.close(); } catch (_) { }
+            }
         };
     }
 
-    // First load: fetch initial state (fast paint) then connect WS
-    async function boot() {
+    // WebSocket pushes remain the fast path. Periodic HTTP snapshots also
+    // update both panes when a socket is missing or silently stops delivering.
+    async function refreshState() {
+        if (stateRequestPending) return;
+        stateRequestPending = true;
+        const before = socketRenderCount;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2000);
         try {
-            const res = await fetch("/api/state", { cache: "no-store" });
+            const res = await fetch("/api/state", { cache: "no-store", signal: controller.signal });
+            if (!res.ok) throw new Error('Display state unavailable');
             const json = await res.json();
-            if (json) render(json);
-        } catch (e) {
-            console.warn("Initial state fetch failed", e);
+            // A slower HTTP snapshot must not overwrite a newer socket update.
+            if (before === socketRenderCount && json) render(json);
+        } catch (_) {
+            // HAL may be stopped; keep the last frame and retry next time.
         } finally {
-            connect();
+            clearTimeout(timeout);
+            stateRequestPending = false;
         }
+    }
+
+    function recover() {
+        connect();
+        refreshState();
+    }
+
+    function boot() {
+        // Neither transport waits for the other to become ready.
+        recover();
+        setInterval(connect, 1000);
+        setInterval(refreshState, 2000);
+        window.addEventListener('online', recover);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') recover();
+        });
     }
 
     document.addEventListener("DOMContentLoaded", boot);

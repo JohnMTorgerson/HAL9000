@@ -19,6 +19,7 @@ import base64
 import binascii
 import hashlib
 import io
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -130,6 +131,7 @@ overlays: List[Overlay] = []
 
 # Connected WebSocket clients (browsers)
 clients: Set[WebSocket] = set()
+logger = logging.getLogger('HAL')
 
 
 # ---------------------------------------------
@@ -228,7 +230,7 @@ async def broadcast(msg: dict) -> None:
     # Option A boundary: convert Pydantic models into pure JSON-able types
     payload = jsonable_encoder(msg, exclude_none=True)
     dead: List[WebSocket] = []
-    for ws in clients:
+    for ws in tuple(clients):
         try:
             await ws.send_json(payload)
         except Exception:
@@ -473,15 +475,19 @@ async def ws(ws: WebSocket) -> None:
     """
     await ws.accept()
     clients.add(ws)
-    # Send initial state so the page renders immediately
-    initial = {"type": "render", "payload": compute_render()}
-    await ws.send_json(jsonable_encoder(initial, exclude_none=True))  # <-- Option A boundary
+    logger.info('Display browser connected: connections=%d', len(clients))
     try:
+        # Include the initial send in cleanup if a browser disconnects at once.
+        initial = {"type": "render", "payload": compute_render()}
+        await ws.send_json(jsonable_encoder(initial, exclude_none=True))
         while True:
             # We don't need client -> server messages yet; this keeps the socket alive.
             await ws.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
         clients.discard(ws)
+        logger.info('Display browser disconnected: connections=%d', len(clients))
 
 
 # ---------------------------------------------

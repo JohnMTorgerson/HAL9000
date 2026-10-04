@@ -130,6 +130,16 @@ The browser retries failed acknowledgment POSTs up to three times, within the
 existing eight-second client wait. It no longer depends on an animation frame
 to acknowledge an image, since background tabs can pause animation frames.
 
+Both the image and conversation panes receive immediate updates through a
+WebSocket. The browser also fetches the current display state every two seconds,
+so a missing or stalled WebSocket does not leave either pane on the slideshow.
+The initial HTTP fetch and socket connection start independently; HTTP requests
+time out after two seconds, and a socket stuck connecting is replaced after
+three seconds. Late snapshots cannot overwrite newer socket updates. The same
+page recovers when HAL's display server restarts, without a manual page reload.
+Connection and disconnection timestamps are written to `log.log`. A zero
+WebSocket count can coexist with a working display through HTTP state refreshes.
+
 Provider refusals are separate from empty results, unsupported backends, and
 technical failures. HAL speaks the provider's explanation when available and
 does not invent a policy category when no reason was supplied. Native refusals,
@@ -156,6 +166,9 @@ acknowledgment (including a deliberately dropped first acknowledgment), and
 clickable citations (`HAL_BROWSER_TESTS=1`, with Playwright
 and Chromium installed). Live search quality and account/model availability still
 need a first run with your own API account.
+Additional browser tests cover first image and conversation updates with a
+stalled connection, a blocked initial state fetch, restarting the display server
+without reloading the page, and delayed snapshots arriving after newer updates.
 
 ## Image layout update
 
