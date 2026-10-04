@@ -12,7 +12,8 @@ import pytest
 
 from image_files import normalize_image, public_url, web_url, download_image
 from image_lookup import (ImageCandidate, ImageProviderError, ImageResult, ImageWorkflow,
-                          UnsupportedImageProvider, make_image_provider, parse_image_request)
+                          UnsupportedImageProvider, make_image_provider, parse_image_request,
+                          repair_image_reply)
 from image_provider_openai import OpenAIImageProvider
 from llm_client import LLMClient
 from followup import FollowupDecision
@@ -49,14 +50,15 @@ def response_body(answer, *, results=None, refusal=None, status='completed', rea
 
 def search_body():
     return response_body({'status': 'ok', 'subject': 'Example Phone 2',
-                          'evidence': 'Official release page identifies Phone 2.', 'reply': ''},
+                          'evidence': 'Official release page identifies Phone 2.', 'reply': '',
+                          'preferred_image_urls': []},
         results=[{'type': 'image_result', 'image_url': f'https://images.example/{n}.jpg',
                   'source_website_url': f'https://example.com/phone2/{n}', 'caption': 'Phone 2'}
                  for n in ('1', '2')])
 
 
 def vision_body():
-    return response_body({'status': 'ok', 'reply': '', 'images': [
+    return response_body({'status': 'ok', 'reply': '', 'rejected_images': [], 'images': [
         {'id': n, 'description': f'Phone 2 view {n}.', 'spoken_reply': f'Here is view {n}.'}
         for n in ('2', '1')]})
 
@@ -96,6 +98,7 @@ def test_real_pinned_sdk_serializes_search_and_batch_vision_in_two_requests(prov
     assert len(pictures) == 2
     assert base64.b64decode(pictures[0]['image_url'].split(',')[1]) == jpeg('red')
     assert 'tools' not in calls[1]
+    assert json.loads(inputs[0]['text'])['date'] == json.loads(calls[0]['input'])['date']
 
 
 @pytest.mark.parametrize('stage', ['search', 'verify'])
@@ -149,15 +152,120 @@ def test_duplicate_downloads_compared_once(provider_factory):
     assert len([x for x in calls[1]['input'][0]['content'] if x['type'] == 'input_image']) == 1
 
 
+@pytest.mark.parametrize('ranked', [False, True])
+def test_refined_search_candidates_are_not_crowded_out_by_early_results(provider_factory, ranked):
+    body = search_body()
+    # Enough early results to fill the old download budget before the targeted call.
+    early = body['output'][0]['results']
+    early.extend(dict(early[0], image_url=f'https://images.example/old-{n}.jpg') for n in range(5))
+    refined = {'type': 'image_result', 'image_url': 'https://images.example/right.jpg',
+               'source_website_url': 'https://example.com/current', 'caption': 'Current model'}
+    body['output'].insert(1, {'type': 'web_search_call', 'id': 'ws-refined',
+                             'status': 'completed', 'results': [refined]})
+    if ranked:
+        answer = json.loads(body['output'][-1]['content'][0]['text'])
+        answer['preferred_image_urls'] = ['https://invented.example/fake.jpg', refined['image_url']]
+        body['output'][-1]['content'][0]['text'] = json.dumps(answer)
+    chosen = response_body({'status': 'ok', 'reply': '', 'images': [
+        {'id': '1', 'description': 'Current model.', 'spoken_reply': 'Here it is.'}]})
+    downloader = Mock(return_value=jpeg())
+    provider, calls = provider_factory([body, chosen], downloader)
+    result = provider.lookup('new phone')
+    assert result.images[0].image_url == refined['image_url']
+    assert downloader.call_args_list[0].args[0] == refined['image_url']
+    assert len(downloader.call_args_list) == 5
+    assert all('invented.example' not in call.args[0] for call in downloader.call_args_list)
+    assert 'current' in calls[1]['input'][0]['content'][1]['text']
+
+
+def test_grounded_preference_changes_the_vision_candidate_order(provider_factory):
+    body = search_body()
+    answer = json.loads(body['output'][-1]['content'][0]['text'])
+    answer['preferred_image_urls'] = ['https://images.example/2.jpg']
+    body['output'][-1]['content'][0]['text'] = json.dumps(answer)
+    provider, calls = provider_factory([body, vision_body()])
+    assert provider.lookup('current phone').status == 'ok'
+    contents = calls[1]['input'][0]['content']
+    assert json.loads(contents[1]['text'])['id'] == '2'
+    assert base64.b64decode(contents[2]['image_url'].split(',')[1]) == jpeg('blue')
+
+
+def test_verification_failure_gets_one_targeted_recovery_with_reasons_logged(provider_factory, caplog):
+    failure = {'status': 'no_results', 'reply': 'These pictures show an older model.',
+               'images': [], 'rejected_images': [{'id': '1', 'reason': 'Older model.'},
+                                                {'id': '2', 'reason': 'Accessory only.'}]}
+    provider, calls = provider_factory([search_body(), response_body(failure),
+                                       search_body(), vision_body()])
+    with caplog.at_level('INFO', logger='HAL'):
+        result = provider.lookup('the new iPhone')
+    assert result.status == 'ok' and len(calls) == 4
+    retry = json.loads(calls[2]['input'])
+    assert retry['request'] == 'the new iPhone'
+    assert retry['previous_attempt']['stage'] == 'verify'
+    assert retry['previous_attempt']['reason'] == failure['reply']
+    assert retry['previous_attempt']['checked_images'][0]['id'] == '1'
+    assert retry['previous_attempt']['rejected_images'] == failure['rejected_images']
+    for expected in ('Older model.', 'Accessory only.', 'Image verification inputs',
+                     'https://images.example/1.jpg', 'Official release page', 'Image lookup recovery'):
+        assert expected in caplog.text
+
+
+def test_search_no_results_recovery_is_bounded_and_preserves_specific_explanation(provider_factory):
+    failure = response_body({'status': 'no_results', 'subject': 'Example Phone',
+                             'evidence': 'Only older photos found.',
+                             'reply': 'I found older models, but no confirmed picture of that model.'})
+    provider, calls = provider_factory([failure, failure])
+    result = provider.lookup('an iPhone 18')
+    assert result.status == 'no_results' and len(calls) == 2
+    assert result.reply == 'I found older models, but no confirmed picture of that model.'
+    assert json.loads(calls[1]['input'])['previous_attempt']['stage'] == 'search'
+
+
+def test_refusal_during_recovery_stops_immediately(provider_factory):
+    provider, calls = provider_factory([
+        response_body({'status': 'no_results', 'reply': 'No useful results.'}),
+        response_body({}, refusal='The provider declined this request.')])
+    with pytest.raises(ImageProviderError) as err:
+        provider.lookup('fixture')
+    assert err.value.status == 'refused' and len(calls) == 2
+
+
+@pytest.mark.parametrize('user_input, reply', [
+    ('Hey Hal, can you show me that Lotus Elise again?', 'Certainly. Here it is again.'),
+    ('Hey Hal, show me a picture of an X-29.',
+     'Here it is, the experimental Grumman X-29 with its distinctive forward-swept wings.'),
+    ('Could you please show me a photo of a blue bird?', 'Here you go.'),
+])
+def test_false_image_success_is_repaired_to_an_actual_command(user_input, reply):
+    repaired = parse_image_request(repair_image_reply(user_input, reply))
+    assert repaired['action'] == 'search'
+    assert any(subject in repaired['query'] for subject in ('Lotus Elise', 'X-29', 'blue bird'))
+
+
+@pytest.mark.parametrize('user_input, reply', [
+    ('Do not show me a picture of a bird.', 'Here it is.'),
+    ('Explain the phrase "show me a picture of a bird".', 'Here it is.'),
+    ('Show me a picture of a bird.', 'Which bird would you like to see?'),
+    ('Show me a picture of a bird.', "I can't provide that image."),
+    ('Show me that calendar again.', 'Here it is.'),
+    ('Show me a picture of a bird.', '[EXTERNAL_API_CALL] wikipedia search bird'),
+    ('Show me a picture of a bird.', COMMAND),
+    ('What is an X-29?', 'Here it is, the answer.'),
+])
+def test_repair_leaves_other_intents_clarifications_and_refusals_alone(user_input, reply):
+    assert repair_image_reply(user_input, reply) == reply
+
+
 @pytest.mark.parametrize('failure', ['download', 'no_results', 'verify_no_results', 'truncated'])
 def test_ordinary_failures_are_not_reported_as_content_restrictions(provider_factory, failure):
     bodies, downloader = [search_body()], None
     if failure == 'download':
         downloader = Mock(side_effect=ValueError('fixture broken image'))
     elif failure == 'no_results':
-        bodies = [response_body({'status': 'no_results', 'reply': ''})]
+        bodies = [response_body({'status': 'no_results', 'reply': ''})] * 2
     elif failure == 'verify_no_results':
         bodies += [response_body({'status': 'no_results', 'reply': '', 'images': []})]
+        bodies *= 2
     else:
         bodies = [response_body({}, status='incomplete', reason='max_output_tokens')]
     provider, _ = provider_factory(bodies, downloader)
@@ -245,10 +353,13 @@ def test_display_failure_does_not_claim_success_or_repeat_wait_for_every_image(s
 
 
 @pytest.mark.parametrize('followup', [False, True])
-def test_real_voice_loop_speaks_image_result_without_fourth_llm_request(followup):
+@pytest.mark.parametrize('routed_reply', [COMMAND, 'Here it is, the Grumman X-29.'])
+def test_real_voice_loop_speaks_image_result_without_fourth_llm_request(followup, routed_reply):
     ns, run, clock = loop_fixture()
-    ns['llm'].get_response.return_value = 'Hello.' if followup else COMMAND
-    ns['llm'].get_followup_response.return_value = FollowupDecision('respond', COMMAND)
+    image_query = 'Hey Hal, show me a picture of an X-29.'
+    ns['stt'].transcribe.side_effect = ['Hello.', image_query] if followup else [image_query]
+    ns['llm'].get_response.return_value = 'Hello.' if followup else routed_reply
+    ns['llm'].get_followup_response.return_value = FollowupDecision('respond', routed_reply)
     provider, display = Mock(supported=True), Mock()
     provider.lookup.return_value = ImageResult('ok', images=[image()])
     display.present_image.return_value = 'loaded'

@@ -58,7 +58,9 @@ At the end of the cached list HAL says there is no further image in that directi
 2. The OpenAI image provider uses one Responses request to resolve the subject
    from current sources and find image candidates. It can make up to three
    hosted search-tool calls inside that request. URLs come from structured tool
-   results, never URLs invented in the assistant's prose.
+   results, never URLs invented in the assistant's prose. The search model ranks
+   candidates using those exact returned URLs; any invented reference is ignored.
+   Unranked candidates from later, refined searches precede early broad results.
 3. Up to five candidate downloads run with bounded sizes and timeouts. Duplicate
    pictures are removed. Up to three usable images are sent together in one
    vision request, with captions and source evidence. That request chooses and
@@ -69,10 +71,27 @@ At the end of the cached list HAL says there is no further image in that directi
    the attempt with a spoken display failure.
 
 The ordinary successful path therefore uses three LLM requests total, including
-the initial HAL turn. There is no separate final rephrasing or moderation call.
-Search-tool calls have their own cost in addition to model usage. There are no
-automatic LLM retries. Search and vision requests each have a 45-second network
-timeout; the browser acknowledgment wait is eight seconds.
+the initial HAL turn. If search or verification finds no suitable image, HAL can
+make one more targeted search using the failure explanation, followed by vision
+if it finds candidates. This recovery can add at most two LLM requests (five
+total). Refusals and service errors stop immediately. There is no separate final
+rephrasing or moderation call, and no automatic network/API-error retries.
+Search-tool calls have their own cost in addition to model usage. Search and
+vision requests each have a 45-second network timeout; the browser acknowledgment
+wait is eight seconds.
+
+Search and verification both receive the current date. They use current source
+evidence to establish recent model identity, without requiring that visually
+similar generations can be distinguished from pixels alone. A clear image of
+any identified model in the current lineup can satisfy a broad "new/latest"
+request; a specifically named model still requires a match to that model.
+
+`log.log` records routing repairs, search queries, the resolved subject and source
+evidence, candidate URLs/captions, verification IDs and rejection reasons, and any
+recovery attempt. HAL speaks the specific no-results explanation when available.
+An explicit picture request followed by an unsupported "Here it is" claim is
+repaired to an image command before speech. Ignored follow-ups and provider
+refusals never trigger this repair.
 
 Images use centered `cover` sizing: they fill the panel without stretching, with
 edges cropped when the aspect ratios differ. They stay visible for two minutes.

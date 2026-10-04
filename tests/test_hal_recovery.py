@@ -23,7 +23,7 @@ from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
-from image_lookup import IMAGE_MARKER
+from image_lookup import IMAGE_MARKER, repair_image_reply
 
 
 def load_hal_function(name, namespace):
@@ -263,6 +263,7 @@ class MainLoopTests(unittest.TestCase):
             'parse_song_request': parse_song_request, 'SongRequestError': SongRequestError,
             'PLAY_SONG_MARKER': PLAY_SONG_MARKER, 'DAISY_PATH': DAISY_PATH,
             'IMAGE_MARKER': IMAGE_MARKER,
+            'repair_image_reply': repair_image_reply,
             'SONG_PAUSE_SECONDS': SONG_PAUSE_SECONDS, 'SONG_FAILURE_REPLY': SONG_FAILURE_REPLY,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
             'explicitly_addresses_hal': explicitly_addresses_hal,

@@ -23,7 +23,7 @@ from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
 from speech_logging import SpeechFormatter
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
-from image_lookup import IMAGE_MARKER, ImageWorkflow, make_image_provider
+from image_lookup import IMAGE_MARKER, ImageWorkflow, make_image_provider, repair_image_reply
 from voice_input import VoiceInput, CommandTooLongError
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
@@ -295,6 +295,15 @@ def run():
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(user_input)
             logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
+
+            if not llm.last_refusal:
+                routed_reply = repair_image_reply(user_input, hal_reply)
+                if routed_reply != hal_reply:
+                    logger.info('Recovered missing image command: request=%s; original reply=%s',
+                                user_input, hal_reply)
+                    hal_reply = routed_reply
+            logger.info('LLM route: %s', hal_reply if hal_reply.startswith(IMAGE_MARKER)
+                        else ('provider refusal' if llm.last_refusal else 'speech or other action'))
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
             # first testing if the query looks like a factual question about a named entity we can search for

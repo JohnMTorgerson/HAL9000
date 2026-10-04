@@ -2,11 +2,43 @@
 from dataclasses import dataclass, field
 import json
 import logging
+import re
 import time
 from urllib.parse import urlsplit
 
 IMAGE_MARKER = '[IMAGE_REQUEST]'
 IMAGE_FAILURE_REPLY = "I'm sorry, I couldn't complete that image request."
+
+
+def repair_image_reply(user_input, reply):
+    """Recover a false display claim for an unambiguous direct image request.
+
+    This is a narrow guard after the LLM's routing decision, not a replacement
+    for its handling of context, quoted speech, questions, or provider refusals.
+    The caller must also exclude native provider refusals and ignored speech.
+    """
+    if reply.lstrip().startswith(('[IMAGE_REQUEST]', '[EXTERNAL_API_CALL]', '[PLAY_SONG]')):
+        return reply
+    # Do not reinterpret explanations, clarifying questions or plain refusals.
+    if not re.search(r'\bhere (?:it is|they are|you (?:are|go))\b', reply, re.I):
+        return reply
+    if re.search(r"\b(?:can(?:not|'t|’t)|unable|won(?:'t|’t)|sorry)\b", reply, re.I):
+        return reply
+    request = ' '.join(user_input.split())
+    request = re.sub(r'^(?:hey[, ]+)?(?:hal|al|hall|howl)[, .:!?]+', '', request, flags=re.I)
+    request = re.sub(r'^(?:(?:can|could|would|will) you\s+)?(?:please\s+)?', '', request, flags=re.I)
+    picture = re.fullmatch(
+        r'(?:show|find|display)(?: me)? (?:an? |some |the )?'
+        r'(?:picture|photo|image)s? of (.+?)[?.!]*', request, re.I)
+    repeat = re.fullmatch(r'(?:show|display) me (?:that|the same) (.+?) again[?.!]*', request, re.I)
+    match = picture or repeat
+    if not match or not match[1].strip() or len(request) > 1000:
+        return reply
+    # These have dedicated display APIs, and an unnamed "that again" needs
+    # context-aware routing rather than a guessed image subject.
+    if re.search(r'\b(?:map|calendar|schedule|video)s?\b', match[1], re.I):
+        return reply
+    return IMAGE_MARKER + ' ' + json.dumps({'action': 'search', 'query': request})
 
 
 def refusal_reply(reason=''):
