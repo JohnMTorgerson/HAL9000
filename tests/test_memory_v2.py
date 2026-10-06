@@ -85,12 +85,14 @@ class MemoryV2Tests(unittest.TestCase):
         self.assertEqual(self.store.memory['hal'], [])
         self.assertEqual(self.store.memory['last_processed_turn'], 7)
         self.assertEqual(self.store.memory['context_after_turn'], 2)
-        for section, retention in (('personal', 'durable'), ('topics', 'temporary')):
+        for section, retention in (('personal', 'durable'), ('topics', 'durable')):
             migrated = copy.deepcopy(self.store.memory[section][0])
             self.assertEqual(migrated.pop('tags'), [])
             self.assertEqual(migrated.pop('retention'), retention)
             self.assertEqual(migrated['evidence'][0].pop('role'), 'user')
-            self.assertEqual(migrated, legacy[section][0])
+            expected = copy.deepcopy(legacy[section][0])
+            expected['expires_on'] = None
+            self.assertEqual(migrated, expected)
         self.assertEqual(self.store.recent, recent)
         self.assertEqual(self.store.next_batch()['new_turns'], [pending])
         backup = json.loads((self.directory / 'memory.json.bak').read_text())
@@ -104,6 +106,43 @@ class MemoryV2Tests(unittest.TestCase):
         original = json.dumps(invalid)
         path.write_text(original)
         with self.assertRaisesRegex(ValueError, 'cannot expire'):
+            self.open_store()
+        self.assertEqual(path.read_text(), original)
+
+    def test_expired_v2_topic_is_promoted_locally_without_rewriting_evidence_or_cursors(self):
+        batch = self.say('I am deciding whether to attend choir practice tonight.')
+        self.store.apply(batch, change(operation(batch['new_turns'][0],
+            'On 2026-10-06 Torgo was deciding whether to attend choir practice.',
+            section='topics', tags=['choir', 'singing', 'music'])))
+        self.store.close()
+        path = self.directory / 'memory.json'
+        legacy = json.loads(path.read_text())
+        legacy['topics'][0].update(retention='temporary', expires_on='2026-10-06')
+        path.write_text(json.dumps(legacy))
+        self.now += timedelta(days=60)
+        self.store = self.open_store()
+        expected = copy.deepcopy(legacy)
+        expected['topics'][0].update(retention='durable', expires_on=None)
+        self.assertEqual(self.store.memory, expected)
+        self.assertEqual(json.loads(path.with_suffix('.json.bak').read_text()), legacy)
+        self.assertIsNone(self.store.next_batch())
+        self.assertIn('choir practice', self.store.recall('choir')[1])
+        self.assertTrue(any(c.args[0] == 'Memory retention migration: %s'
+                            for c in self.logger.info.call_args_list))
+        self.store.close()
+        self.store = self.open_store()
+        self.assertEqual(self.store.memory, expected)
+
+    def test_invalid_temporary_v2_topic_is_not_silently_repaired(self):
+        batch = self.say('Planning a trip.')
+        self.store.apply(batch, change(operation(batch['new_turns'][0], 'Planning a trip.', section='topics')))
+        self.store.close()
+        path = self.directory / 'memory.json'
+        data = json.loads(path.read_text())
+        data['topics'][0].update(retention='temporary', expires_on='not a date')
+        original = json.dumps(data)
+        path.write_text(original)
+        with self.assertRaises(ValueError):
             self.open_store()
         self.assertEqual(path.read_text(), original)
 
@@ -217,30 +256,32 @@ class MemoryV2Tests(unittest.TestCase):
         self.assertEqual(self.store.memory['hal'][0], original)
         self.assertIn(reply, self.store.recall('philosophy')[1])
 
-    def test_durable_topic_survives_age_while_temporary_topic_expires(self):
+    def test_all_topics_survive_age_and_background_updates(self):
         batch = self.say('We can discuss free will today and plan a trip tomorrow.')
         turn = batch['new_turns'][0]
         self.store.apply(batch, change(
-            operation(turn, 'An unresolved debate about free will.', section='topics', tags=['philosophy']),
-            operation(turn, 'Planning a short trip.', section='topics', retention='temporary',
-                      expiry='2026-10-07', tags=['travel'])))
+            operation(turn, 'On 2026-10-06 we discussed free will.', section='topics', tags=['philosophy']),
+            operation(turn, 'On 2026-10-06 Torgo planned a trip for October 7; outcome unknown.',
+                      section='topics', tags=['travel'])))
         self.now += timedelta(days=400)
         facts = self.store.recall('philosophy travel')[1]
         self.assertIn('free will', facts)
-        self.assertNotIn('short trip', facts)
+        self.assertIn('planned a trip', facts)
         self.store.apply(self.say('What time is it?'), change())
-        self.assertEqual(len(self.store.memory['topics']), 1)
+        self.assertEqual(len(self.store.memory['topics']), 2)
 
-    def test_temporary_topic_can_be_promoted_but_durable_note_cannot_be_downgraded(self):
+    def test_expiring_topic_operations_are_rejected_atomically(self):
         batch = self.say('I want to discuss free will.')
+        before = (self.directory / 'memory.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'cannot expire'):
+            self.store.apply(batch, change(operation(batch['new_turns'][0], 'Exploring free will.',
+                section='topics', retention='temporary', expiry='2026-11-05', tags=['philosophy'])))
+        self.assertEqual((self.directory / 'memory.json').read_bytes(), before)
         self.store.apply(batch, change(operation(batch['new_turns'][0], 'Exploring free will.',
-            section='topics', retention='temporary', expiry='2026-11-05', tags=['philosophy'])))
+                                                section='topics', tags=['philosophy'])))
         ident = self.store.memory['topics'][0]['id']
-        batch = self.say('That debate clarified my lasting position on free will.')
-        self.store.apply(batch, change(operation(batch['new_turns'][0], 'A lasting debate on free will.',
-            section='topics', action='update', ident=ident, tags=['philosophy'])))
         batch = self.say('Let us revisit free will next week.')
-        with self.assertRaisesRegex(ValueError, 'cannot be downgraded'):
+        with self.assertRaisesRegex(ValueError, 'cannot expire'):
             self.store.apply(batch, change(operation(batch['new_turns'][0], 'Revisit free will.',
                 section='topics', action='update', ident=ident, retention='temporary',
                 expiry='2026-11-05', tags=['philosophy'])))
@@ -332,7 +373,7 @@ class MemoryV2Tests(unittest.TestCase):
                              evidence=[source(original), source(turn)])
         personal['basis'] = 'inferred'
         topic = operation(turn, 'Torgo was deciding whether to attend choir practice.',
-                          section='topics', retention='temporary', expiry=self.now.date().isoformat(),
+                          section='topics',
                           tags=['choir', 'attendance'], evidence=[source(original), source(turn)])
         self.store.apply(batch, change(personal, topic))
         self.assertEqual(self.store.memory['personal'][0]['basis'], 'inferred')
@@ -421,6 +462,105 @@ class MemoryV2Tests(unittest.TestCase):
         batch['earlier_context'] = [original]
         with self.assertRaisesRegex(ValueError, 'NEW accepted turns'):
             self.store.apply(batch, change(forget=True, forget_evidence=[source(original)]))
+
+    def test_team_requests_accumulate_and_can_support_cross_record_personal_inference(self):
+        tags = ['vikings', 'minnesota vikings', 'football', 'sports', 'score', 'injury', 'news']
+        first = self.say('What is the Vikings score?')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(operation(original,
+            'On 2026-10-06 Torgo asked for the Vikings score; allegiance unconfirmed.',
+            section='topics', tags=tags)))
+        ident = self.store.memory['topics'][0]['id']
+        self.assertFalse(self.store.memory['personal'])
+        self.now += timedelta(days=2)
+        second = self.say('Any Vikings injuries?')
+        self.store.apply(second, change(operation(second['new_turns'][0],
+            'Torgo asked for the Vikings score on October 6 and injuries on October 8, 2026.',
+            section='topics', action='extend', ident=ident, tags=tags)))
+        for _ in range(5):
+            self.store.apply(self.say('What time is it?'), change())
+        self.store.close()
+        self.store = self.open_store()
+        self.now += timedelta(days=3)
+        third = self.say('Any Vikings news today?')
+        turn = third['new_turns'][0]
+        self.assertNotIn(original['id'], [t['id'] for t in third['earlier_context']])
+        self.assertEqual(third['catalogue']['topics'][0]['evidence_count'], 2)
+        self.assertEqual(third['catalogue']['topics'][0]['evidence_dates'], ['2026-10-06', '2026-10-08'])
+        personal = operation(turn, 'Torgo appears to follow the Vikings.', tags=tags,
+                             evidence=[source(original), source(turn)])
+        personal['basis'] = 'inferred'
+        self.store.apply(third, change(operation(turn,
+            'Torgo asked for Vikings scores on October 6, injuries October 8 and news October 11, 2026.',
+            section='topics', action='extend', ident=ident, tags=tags,
+            evidence=[source(original), source(turn)]), personal))
+        note = self.store.memory['topics'][0]
+        self.assertEqual(note['id'], ident)
+        self.assertEqual(note['evidence_count'], 3)
+        self.assertEqual(note['evidence_dates'], ['2026-10-06', '2026-10-08', '2026-10-11'])
+        self.assertEqual(len(note['evidence']), 3)
+        fact = self.store.memory['personal'][0]
+        self.assertEqual(fact['basis'], 'inferred')
+        self.assertTrue(fact['evidence'][0]['context_only'])
+        self.assertEqual(fact['evidence_count'], 1)
+        self.now += timedelta(days=500)
+        self.assertIn('October 6', self.store.recall('Vikings')[1])
+        self.assertIn('appears to follow', self.store.recall('Vikings')[1])
+
+    def test_topic_correction_resets_support_while_extension_is_not_allowed_on_personal(self):
+        batch = self.say('What is the Vikings score?')
+        self.store.apply(batch, change(operation(batch['new_turns'][0], 'Vikings questions.',
+                                                section='topics', tags=['vikings'])))
+        ident = self.store.memory['topics'][0]['id']
+        batch = self.say('Those Vikings questions were for my brother, not for me.')
+        self.store.apply(batch, change(operation(batch['new_turns'][0],
+            'Torgo clarified the Vikings questions were for his brother.',
+            section='topics', action='update', ident=ident, tags=['vikings', 'brother'])))
+        self.assertEqual(self.store.memory['topics'][0]['evidence_count'], 1)
+        self.assertEqual(self.store.memory['topics'][0]['evidence'][0]['turn_id'], 2)
+        batch = self.say('I have a cat.')
+        self.store.apply(batch, change(operation(batch['new_turns'][0], 'Torgo has a cat.', tags=['cat'])))
+        batch = self.say('My cat is Miso.')
+        with self.assertRaisesRegex(ValueError, 'Only discussion topics'):
+            self.store.apply(batch, change(operation(batch['new_turns'][0], 'Torgo has a cat named Miso.',
+                action='extend', ident=self.store.memory['personal'][0]['id'], tags=['cat'])))
+
+    def test_cross_record_sources_require_retrieval_and_user_attribution(self):
+        first = self.say('What is the Vikings score?', 'You seem to like the Vikings.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(operation(original, 'Vikings score discussion.', section='topics',
+            tags=['vikings'], evidence=[source(original), source(original, 'assistant')])))
+        for _ in range(5):
+            self.store.apply(self.say('What time is it?'), change())
+        batch = self.say('Any Vikings news?')
+        turn = batch['new_turns'][0]
+        with self.assertRaisesRegex(ValueError, 'Evidence role'):
+            self.store.apply(batch, change(operation(turn, 'Torgo is a Vikings fan.',
+                evidence=[source(original, 'assistant'), source(turn)])))
+        hidden = copy.deepcopy(batch)
+        hidden['memory']['topics'] = []
+        with self.assertRaisesRegex(ValueError, 'supplied supporting context'):
+            self.store.apply(hidden, change(operation(turn, 'Torgo follows the Vikings.',
+                evidence=[source(original), source(turn)])))
+        self.assertFalse(self.store.memory['personal'])
+
+    def test_one_exchange_can_save_hal_preference_and_dated_conversation(self):
+        batch = self.say('What is your favorite color?', 'I prefer blue; I find it calming.')
+        turn = batch['new_turns'][0]
+        self.store.apply(batch, change(
+            operation(turn, 'HAL prefers blue because he finds it calming.', section='hal',
+                      tags=['favorite color', 'blue', 'preference']),
+            operation(turn, 'On 2026-10-06 Torgo asked HAL his favorite color; HAL chose blue as calming.',
+                      section='topics', tags=['favorite color', 'blue', 'conversation'],
+                      evidence=[source(turn), source(turn, 'assistant')])) )
+        for _ in range(5):
+            self.store.apply(self.say('What time is it?'), change())
+        self.now += timedelta(days=7)
+        facts = json.loads(self.store.recall('Remember when I asked your favorite color last week?')[1])
+        self.assertEqual(len(facts['topics']), 1)
+        self.assertIn('2026-10-06', facts['topics'][0]['text'])
+        self.assertEqual(len(facts['hal']), 1)
+        self.assertFalse(facts['personal'])
 
 
 if __name__ == '__main__':

@@ -70,18 +70,23 @@ of the directory used to start HAL. The default Pi files are:
 | --- | --- | --- |
 | `personal` | Facts, preferences, interests, and views expressed by the user | Permanent until corrected or forgotten |
 | `hal` | HAL's own expressed views and interests, with brief reasons where useful | Permanent, but revisable |
-| `topics` | Current practical context and summaries of meaningful discussions | Temporary or durable |
+| `topics` | Dated shared conversations, plans, projects, and accumulating evidence of interests | Permanent until corrected, merged, or forgotten |
 
 Each entry has a stable `id`, compact `text`, `basis` (`explicit` or `inferred`),
 search `tags`, dates, and supporting evidence attributed to the user or HAL.
-Personal and HAL entries have `expires_on: null`. Temporary topics have an ISO
-expiry date; without a more appropriate event date, the updater uses 30 days.
-They remain active through their expiry date and are removed on a subsequent
-successful background update. Durable topics have no expiry. Permanent entries
-are not deleted because they are old or were not selected by a search.
+All three sections use `retention: durable` and `expires_on: null`. A plan ending
+does not erase the conversation about it. Summaries include absolute discussion
+and event dates, with unknown outcomes left unknown. Past plans, scores and injuries
+must not be presented as current information. Records are not deleted because they
+are old or were not selected by a search.
 
-Existing version-1 memory files are migrated locally without losing personal
-facts or changing the meaning of temporary topic notes. Existing untagged entries
+Existing version-1 and version-2 memory files are migrated locally: surviving
+temporary topics, including already-expired ones still on disk, become durable.
+IDs, text, tags, creation/update times, evidence and processing cursors are preserved;
+only retention/expiry change. The prior file is backed up, and topic promotions
+are logged. Already-deleted topics cannot be recovered by this migration; a
+separate, explicit repair needs a transcript or backup. No LLM is needed for the
+retention migration, and the file format remains version 2. Existing untagged entries
 are queued for background tag enrichment, at most 20 per batch. This uses the
 same updater and may make paid calls at startup even when there is no new spoken
 exchange. Records remain available for text matching while tagging is pending.
@@ -123,10 +128,12 @@ exchanges for context. The same call handles personal facts, HAL views, discussi
 notes, and search tags; these do not each require a separate call. Pending tag
 enrichment can accompany that exchange or run by itself at startup.
 
-A request can propose additions, updates, reinforcement, deletions, or no changes.
+A request can propose additions, cumulative topic extensions, corrections,
+reinforcement, deletions, or no changes.
 Content changes must cite at least one exact quote from the newly accepted exchange
 with the correct speaker role. They may also cite the supplied earlier dialogue
-or still-valid evidence of the existing entry being updated. This keeps the actual
+or still-valid evidence of any locally selected memory, including user quotes
+from a topic when creating an inferred personal interest. This keeps the actual
 subject statement alongside a continuation such as “I do not feel up to it.”
 Older quotes are marked `context_only: true` and do not increase fresh evidence
 counts or evidence dates. Old context alone cannot create or reinforce a memory,
@@ -137,15 +144,26 @@ model and should be checked in the log.
 
 The updater is instructed to preserve explicit facts, mark uncertain inferences,
 merge duplicates, correct contradictions, and ignore routine weather/time facts.
-Recurring interests should be supported across separate days; one trivia query
-does not prove fandom. Reinforcement records evidence dates, and processing a
-saved exchange again after a crash cannot count it twice. Corrections replace
-contradicted supporting evidence rather than treating it as support for the new
-claim; cumulative discussion updates may explicitly retain still-valid sources.
+Entity-focused requests, including team scores, injuries and news, start a topic
+on the first mention. Repeated independent requests accumulate before they warrant
+a personal inference. The LLM decides whether the strength, variety, dates and
+context support interest or fandom; there is no hard-coded count/day threshold.
+A question about a matchup does not establish which team the user supports.
+Retries, work/research, rival teams and asking for somebody else need consideration.
+
+The `extend` action rewrites a topic's cumulative summary while preserving earlier
+evidence counts/dates and merging supporting quotes. `reinforce` requires unchanged
+text/basis/retention. `update` is for corrections/replacements and resets supporting
+evidence. Evidence counts count cited fresh speaker sources, not necessarily unique
+visits: a user and assistant quote in one exchange count twice. The model must use
+the actual user evidence and dates rather than treating that counter as a fandom
+score. Quotes are bounded to three per entry, and evidence dates to the latest 12;
+dated summaries carry the broader history. Older cited quotes are context, not new
+reinforcement. Replaying a saved exchange after a crash cannot count it twice.
 
 The updater checks separately for lasting personal information and temporary
 situations within the same statement. Mentioning the user's own choir rehearsal,
-for example, can support both a temporary attendance decision and a cautious
+for example, can support both a durable dated attendance discussion and a cautious
 personal inference that they sing in a choir. Repetition is not required for this
 kind of direct autobiographical implication. Attending a concert or accompanying
 somebody else does not establish participation. `basis` describes the source of
@@ -157,12 +175,16 @@ belief. Tentative views remain tentative. A changed position replaces the old
 position while retaining a useful explanation of the change in the text. These
 records are context, not permission to rewrite HAL's core persona or instructions.
 
-Topic notes preserve each participant's position, important conclusions or
-disagreements, and unresolved questions. Meaningful discussions can be made
-durable; routine weather and time answers should not become a permanent archive.
-Later discussion should update the relevant note rather than create many
-near-identical summaries. Bounded transcripts still contain the exact recent
-conversation; older durable notes preserve its substance, not every word.
+Topic notes preserve shared conversational history even after one exchange:
+mentioning a cat, asking HAL his favorite color, discussing daily plans, or asking
+about free will can merit a dated topic as well as a separate personal/HAL fact.
+The three sections are evaluated independently. Ordinary greetings and bare
+weather/time checks usually need no note. Later related exchanges extend the
+existing note, preserving noteworthy dated developments, questions/answers,
+positions and unresolved outcomes. A separate dated continuation is allowed if
+the 2000-character topic limit would otherwise erase noteworthy history.
+Bounded transcripts still contain the exact recent conversation; durable notes
+preserve its substance and selected quotes, not every word.
 
 The updater supplies generous but relevant tags for every new or updated memory:
 names and aliases, broader subjects, related concepts, and useful synonyms.
@@ -205,8 +227,8 @@ call to choose memories. If an entry is missing from the selected subset, that
 does not mean it is absent from the archive.
 
 The background updater receives locally selected existing entries with evidence,
-plus a compact catalogue of all active entries containing IDs, text, tags, and
-retention information. The catalogue lets it identify corrections, duplicates,
+plus a compact catalogue of all entries containing IDs, text, tags, retention,
+creation/update dates and evidence counts/dates. The catalogue lets it identify corrections, duplicates,
 and affected records to forget even when local search misses an association.
 This preserves broad maintenance coverage in one request, but background input
 still grows with the archive; only the foreground selection stays bounded.

@@ -103,25 +103,25 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(entry['evidence_count'], 2)
         self.assertEqual(entry['evidence_dates'], ['2026-10-02'])
 
-    def test_topic_expires_but_personal_fact_does_not(self):
+    def test_dated_topic_and_personal_fact_survive_event_end(self):
         self.remember_cat()
         batch = self.say('I am planning a costume for Halloween.')
         op = operation(batch['new_turns'][0], 'Planning a Halloween costume.',
-                       section='topics', expires='2026-10-31')
+                       section='topics')
         self.store.apply(batch, changes(op))
         self.assertIn('Halloween', self.store.recall('Halloween')[1])
         self.now += timedelta(days=31)
         facts = self.store.recall('cat and Halloween')[1]
-        self.assertNotIn('Halloween', facts)
+        self.assertIn('Halloween', facts)
         self.assertIn('Miso', facts)
         self.store.apply(self.say('What time is it?'), changes())
-        self.assertEqual(self.store.memory['topics'], [])
+        self.assertEqual(len(self.store.memory['topics']), 1)
 
     def test_forget_clears_topic_and_recent_context_and_is_not_replayed_after_restart(self):
         ident = self.remember_cat()
         batch = self.say('Let us discuss Miso tomorrow.')
         self.store.apply(batch, changes(operation(batch['new_turns'][0], 'Discussing Miso.',
-                                                 section='topics', expires='2026-10-03')))
+                                                 section='topics')))
         batch = self.say('Forget my cat\'s name.')
         turn = batch['new_turns'][0]
         # A later statement queued while reasoning is in flight must survive.

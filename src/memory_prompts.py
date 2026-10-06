@@ -12,8 +12,12 @@ personal contains facts about {user_name}; hal contains HAL's previously express
 views and interests; topics contains attributed discussion notes. Keep speakers'
 positions separate. Inferred memories are tentative. HAL's views may evolve with
 reasons; consistency does not require repeating mistakes. Prefer current corrections
-over older memory; dates distinguish past and current circumstances. Temporary plans
-are not permanent facts. Updates run asynchronously after spoken replies. Acknowledge
+over older memory; dates distinguish past and current circumstances. All memories
+are retained indefinitely, but that does NOT make past plans, scores, injuries or
+conditions current. Topic notes describe dated conversations, not live facts. Use
+the dates in the summary and created_at/updated_at; an update date is not proof
+that every event in the summary happened then. Do not invent missing dates.
+Updates run asynchronously after spoken replies. Acknowledge
 requests to remember, correct, or forget without claiming a disk write has succeeded.
 """
 
@@ -34,16 +38,25 @@ personal: Useful facts about {user_name}: pets, relationships, equipment, prefer
 experiences, opinions, recurring interests. Evidence MUST quote user_speech with
 role=user. HAL's claims cannot establish personal facts. Explicit means actually
 stated; inferred means a modest interpretation. One trivia question does not prove
-fandom; repeated interest on separate evidence_dates may support a tentative
-inference. Do not mistake quotations, hypotheticals, fiction or another person's
+fandom. Repeated, independent requests about an entity across scores, injuries,
+news or other subjects may support an inferred interest or fandom. Use your judgment
+about strength, variety, dates and context; there is no fixed numeric threshold or
+mandatory number of days. Distinguish following a team from supporting it, and a
+single conversation's retries from independent interest. Consider rival teams,
+work/research and requests on someone else's behalf. Keep a tentative inference
+tentative and consider stronger or contrary evidence on later turns. Do not mistake
+quotations, hypotheticals, fiction or another person's
 biography for the user's life. Keep distinct people/pets separate.
 
 Check separately for a lasting personal fact AND a temporary situation in the
-same utterance; a topic note must not substitute for a useful personal memory.
+same utterance; each can warrant its own entry. A topic note must not substitute
+for a useful personal memory, and a personal/HAL fact must not replace the dated
+memory of a noteworthy exchange. Check all three sections independently.
 Direct references to the user's own recurring activities/commitments can support
 a cautious personal inference on FIRST mention. For example, deciding whether to
-attend their choir rehearsal tonight can support both an explicit temporary
-attendance decision and an inferred personal fact that they sing in a choir.
+attend their choir rehearsal tonight can support both an explicit, permanently
+retained discussion of that dated attendance decision and an inferred personal
+fact that they sing in a choir.
 Likewise their own team practice or lesson can indicate ongoing participation.
 Do not infer membership merely from attending a concert, accompanying somebody
 else, or explicitly trying a one-off guest activity. The repeated-interest rule
@@ -53,7 +66,7 @@ basis describes how the saved claim is supported, NOT the user's confidence in
 their decision. 'I am deciding whether to go' explicitly supports being undecided.
 Resolving 'it' from prior dialogue does not by itself make a claim inferred.
 Mark only conclusions beyond what the user stated as inferred. Split an explicit
-temporary plan and an inferred lasting participation fact into separate entries.
+dated plan and an inferred lasting participation fact into separate entries.
 
 hal: HAL's own adopted views, preferences and recurring intellectual interests.
 For add/update/reinforce, evidence MUST quote assistant_reply with role=assistant,
@@ -64,19 +77,45 @@ not HAL's beliefs. Revise an existing position when he changes his mind, noting
 why a significant change occurred. Do not invent a human biography or adopt the
 user's opinion on his behalf. User requests may support deleting HAL entries.
 
-topics: Compact cumulative discussion/project notes. Clearly attribute each
-participant's positions, reasons, agreements/disagreements, dated developments,
-and unresolved questions when present. Update the same topic across exchanges;
-do not create a summary of every turn. Evidence may quote either speaker, including
-one quote from each in the same new turn. Do not turn HAL's claims into user facts.
-Keep substantive philosophical debates, meaningful decisions and discussions of
-lasting interests with retention=durable, expires_on=null. Short-lived plans use
-retention=temporary and an ISO expiry (default_topic_expiry or a known event end
-date). Promote worthwhile notes. Never downgrade or expire a durable note.
+topics: Compact, cumulative memories of shared conversations and observed interests.
+Save noteworthy exchanges on FIRST mention, even one question and answer: personal
+disclosures, pets, daily experiences, plans, decisions, opinions, preferences,
+projects and reflective discussions all qualify. This is not limited to debates.
+'I have a cat' merits a dated topic as well as a personal fact. Asking HAL his
+favorite color merits a dated question/answer note as well as any actual HAL
+preference he expresses. A free-will question and HAL's view merit a topic even
+if the user gives no view; never invent the user's position. Evidence may quote
+either speaker, including both in the same new turn.
 
-personal and hal always use retention=durable, expires_on=null. Durable means keep
-until corrected/forgotten/merged, not send every prompt. Never delete for age, size
-or lack of repetition. Weather/time/results queries usually warrant NO memory.
+Save entity-focused information requests that could reveal interests, including
+game scores, injury reports, team news, and requests about particular cars,
+aircraft, authors, etc. Start a topic with the FIRST request even though it cannot
+yet justify a personal inference. Record what the user asked, the specific entity
+or entities, and the date. For a two-team score query, do not guess which team the
+user supports. Prefer one cumulative topic for a coherent interest; relate earlier
+matchups/news when the link becomes clear, keeping ambiguous requests ambiguous.
+Update this history when new related requests arrive, then independently evaluate
+whether the accumulated USER evidence warrants an inferred personal interest/fandom.
+Relevant older quotes in supplied memory may support that inference alongside a
+new user quote. Evidence counts include supporting speaker quotes, not necessarily
+independent visits; dates and text provide context. Do not mistake HAL's replies,
+re-read memories, retries or repeated display requests for new proof of fandom.
+
+Use absolute dates from the turns for discussions and plans ('On 2026-10-05 ...'),
+resolving tonight/tomorrow relative to that turn, not the update's date. Preserve
+important dated developments, questions/answers, positions, reasons and unresolved
+outcomes across extensions, so 'remember when we discussed ...' can be answered.
+An old proposed plan is not evidence it happened. Save scores or news only as dated,
+attributed conversation details when useful; never as permanently current facts.
+Use extend for cumulative developments; don't overwrite the past with the latest
+situation. If 2000 characters cannot retain noteworthy history, create a separate
+dated continuation topic instead of dropping it. Avoid duplicate notes for one
+exchange; ordinary chatter, greetings and bare weather/time checks generally need
+no topic unless personal context makes them noteworthy.
+
+ALL sections always use retention=durable, expires_on=null. Durable means keep
+until corrected/forgotten/merged, not send every prompt. An event ending does not
+expire its conversation. Never delete for age, size or lack of repetition.
 Never store secrets, passwords, keys or codes, or full transcripts. Text limits:
 personal/hal 800 characters, topics 2000. Concise notes, not lists of every query.
 
@@ -92,19 +131,25 @@ interests or positions can find these entries. Aim for a useful mix, usually
 5-12 tags. Correcting
 text should also remove obsolete names/claims from tags.
 
-Operations: add (id empty), update, reinforce, delete (existing id). Prefer existing
-entries over duplicates. Explicit corrections outweigh inferences. A correction
+Operations: add (id empty); extend, update, reinforce, delete (existing id).
+extend is for TOPICS ONLY: rewrite a cumulative summary to include the new exchange
+while preserving valid prior history. It keeps accumulated evidence counts/dates
+and a bounded selection of quotes. Use update for a correction/replacement of a
+claim; it resets its supporting evidence to the supplied valid sources. Use
+reinforce when the claim/text is unchanged. Prefer existing entries over duplicates.
+Explicit corrections outweigh inferences. A correction
 must also update or remove contradictory references in other sections (the catalogue
 lets you find them). If a new USER correction invalidates a HAL memory's claim about
 the user, delete that obsolete HAL entry; do not invent a replacement HAL position.
-reinforce retains text, basis and retention; temporary expiry may extend. delete
+reinforce retains text, basis and retention. delete
 copies the existing text, basis, retention, tags and expiry. Give a short user-facing
 reason, not internal reasoning. Maximum 20 ordinary operations. Every operation
 requires 1-3 exact nonempty quotes (<=300 characters); evidence fields are turn_id,
 role (user or assistant), quote. At least ONE quote must come from a NEW turn and
 actually support the change or reinforcement. You may additionally cite supplied
-earlier_context, or supporting evidence already supplied for the entry being
-updated. Include the original substantive statement when a new 'it', 'that' or
+earlier_context, or supporting evidence in ANY supplied memory record, including
+USER quotes from a topic when adding an inferred personal interest. Per-section
+speaker requirements still apply. Include the original substantive statement when a new 'it', 'that' or
 'yes' depends on it; do not leave a vague continuation as the sole source. When
 updating a cumulative discussion, retain still-valid original source quotes for
 claims carried forward, and discard quotes invalidated by a correction. The app
@@ -160,12 +205,12 @@ MEMORY_FORMAT = {
                 'id': {'type': 'string'}, 'tags': _TAGS,
             })},
             'operations': {'type': 'array', 'items': _object({
-                'action': {'type': 'string', 'enum': ['add', 'update', 'reinforce', 'delete']},
+                'action': {'type': 'string', 'enum': ['add', 'update', 'extend', 'reinforce', 'delete']},
                 'section': {'type': 'string', 'enum': ['personal', 'hal', 'topics']},
                 'id': {'type': 'string'}, 'text': {'type': 'string'},
                 'basis': {'type': 'string', 'enum': ['explicit', 'inferred']},
-                'retention': {'type': 'string', 'enum': ['temporary', 'durable']},
-                'expires_on': {'type': ['string', 'null']}, 'tags': _TAGS,
+                'retention': {'type': 'string', 'enum': ['durable']},
+                'expires_on': {'type': 'null'}, 'tags': _TAGS,
                 'reason': {'type': 'string'},
                 'evidence': {'type': 'array', 'items': _SOURCE},
             })},

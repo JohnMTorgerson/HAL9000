@@ -13,7 +13,7 @@ import unicodedata
 
 SECTIONS = ('personal', 'hal', 'topics')
 CONTEXT_TURNS = 3
-_COMPACT_FIELDS = ('id', 'text', 'tags', 'basis', 'updated_at', 'expires_on', 'retention')
+_COMPACT_FIELDS = ('id', 'text', 'tags', 'basis', 'created_at', 'updated_at', 'expires_on', 'retention')
 _STOPWORDS = frozenset('''
     a an and are as at be been being but by can could did do does doing done
     for from had has have having he her hers herself him himself his how i if

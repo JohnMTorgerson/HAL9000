@@ -1,6 +1,6 @@
 """Human-editable JSON memory, with atomic writes and a durable update cursor."""
 import copy
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import fcntl
 import hashlib
 import json
@@ -39,13 +39,12 @@ def _tags(value, *, allow_empty=False):
     return list(dict.fromkeys(' '.join(tag.casefold().split()) for tag in value))
 
 
-def _retention(item, section):
-    _require(item.get('retention') in ('temporary', 'durable'), 'Invalid memory retention.')
-    if section != 'topics' or item['retention'] == 'durable':
-        _require(item['retention'] == 'durable' and item.get('expires_on') is None,
-                 'Durable memories cannot expire.')
-    else:
+def _retention(item, section, *, allow_legacy=False):
+    if allow_legacy and section == 'topics' and item.get('retention') == 'temporary':
         _date(item.get('expires_on'))
+        return
+    _require(item.get('retention') == 'durable' and item.get('expires_on') is None,
+             'All memories are durable and cannot expire.')
 
 
 def _replace(path, data):
@@ -89,9 +88,11 @@ class MemoryStore:
             self.recent = self._load('recent_conversation.json', {
                 'version': 1, 'next_turn_id': self.memory['last_processed_turn'] + 1, 'turns': [],
             })
+            loaded_memory = self.memory
             self.memory = self._migrate(self.memory)
             self._validate_memory(self.memory)
             self._validate_recent(self.recent)
+            old_topics = {i['id']: i.get('expires_on') for i in loaded_memory['topics']}
             # Missing memory alongside an existing recent file starts fresh; do
             # not silently regenerate deleted memories from older conversation.
             if self.signatures['memory.json'] is None:
@@ -100,29 +101,38 @@ class MemoryStore:
                                                self.memory['last_processed_turn'] + 1)
             self._save('memory.json', self.memory)
             self._save('recent_conversation.json', self.recent)
+            promoted = {ident: expiry for ident, expiry in old_topics.items() if expiry is not None}
+            if promoted:
+                self.logger.info('Memory retention migration: %s', json.dumps({
+                    'promoted_topics': promoted, 'retention': 'durable',
+                    'reason': 'Conversation history does not expire when an event ends.'}))
         except Exception:
             self.close()
             raise
 
     @staticmethod
     def _migrate(value):
-        """Add only schema metadata; never reinterpret an older saved fact."""
-        if not isinstance(value, dict) or value.get('version') != 1:
+        """Validate legacy records, then retain all surviving topics permanently."""
+        if not isinstance(value, dict) or value.get('version') not in (1, 2):
             return value
         value = copy.deepcopy(value)
-        _require('hal' not in value, 'Version 1 memory unexpectedly contains a HAL section.')
-        for section in ('personal', 'topics'):
-            _require(isinstance(value.get(section), list), 'Missing legacy memory section.')
-            for item in value[section]:
-                _require(isinstance(item, dict) and 'tags' not in item and 'retention' not in item,
-                         'Invalid legacy memory entry.')
-                item['tags'] = []
-                item['retention'] = 'durable' if section == 'personal' else 'temporary'
-                _require(isinstance(item.get('evidence'), list), 'Invalid legacy evidence.')
-                for source in item['evidence']:
-                    _require(isinstance(source, dict) and 'role' not in source, 'Invalid legacy source.')
-                    source['role'] = 'user'
-        value.update(version=2, hal=[])
+        if value['version'] == 1:
+            _require('hal' not in value, 'Version 1 memory unexpectedly contains a HAL section.')
+            for section in ('personal', 'topics'):
+                _require(isinstance(value.get(section), list), 'Missing legacy memory section.')
+                for item in value[section]:
+                    _require(isinstance(item, dict) and 'tags' not in item and 'retention' not in item,
+                             'Invalid legacy memory entry.')
+                    item['tags'] = []
+                    item['retention'] = 'durable' if section == 'personal' else 'temporary'
+                    _require(isinstance(item.get('evidence'), list), 'Invalid legacy evidence.')
+                    for source in item['evidence']:
+                        _require(isinstance(source, dict) and 'role' not in source, 'Invalid legacy source.')
+                        source['role'] = 'user'
+            value.update(version=2, hal=[])
+        MemoryStore._validate_memory(value, allow_legacy=True)
+        for item in value['topics']:
+            item.update(retention='durable', expires_on=None)
         return value
 
     def _load(self, name, default):
@@ -152,7 +162,7 @@ class MemoryStore:
         self.signatures[name] = hashlib.sha256(data).digest()
 
     @staticmethod
-    def _validate_memory(value):
+    def _validate_memory(value, *, allow_legacy=False):
         _require(isinstance(value, dict) and value.get('version') == 2,
                  'Unsupported memory.json format.')
         for key in ('last_processed_turn', 'context_after_turn'):
@@ -172,7 +182,7 @@ class MemoryStore:
                 _tags(item.get('tags'), allow_empty=True)  # Migrated notes await background indexing.
                 for field in ('created_at', 'updated_at'):
                     datetime.fromisoformat(item[field])
-                _retention(item, section)
+                _retention(item, section, allow_legacy=allow_legacy)
                 _require(type(item.get('evidence_count')) is int and item['evidence_count'] >= 1,
                          'Invalid memory evidence count.')
                 _require(isinstance(item.get('evidence_dates'), list)
@@ -208,10 +218,7 @@ class MemoryStore:
             datetime.fromisoformat(turn['at'])
 
     def _active_memory(self):
-        today = self.now().date()
-        return {section: [copy.deepcopy(item) for item in self.memory[section]
-                          if item['retention'] == 'durable' or _date(item['expires_on']) >= today]
-                for section in SECTIONS}
+        return {section: copy.deepcopy(self.memory[section]) for section in SECTIONS}
 
     def recall(self, query='', *, token_budget=3000):
         with self.lock:
@@ -270,11 +277,12 @@ class MemoryStore:
                 {'purpose': 'background', **diagnostics}, ensure_ascii=False))
             return copy.deepcopy({
                 'cursor': cursor, 'today': self.now().date().isoformat(),
-                'default_topic_expiry': (self.now().date() + timedelta(days=30)).isoformat(),
                 'memory': selected,
                 # All semantic content remains visible to maintenance, so a
                 # correction/forget cannot miss a detail outside retrieval.
-                'catalogue': {section: [compact_entry(item) for item in items]
+                'catalogue': {section: [{**compact_entry(item),
+                                        'evidence_count': item['evidence_count'],
+                                        'evidence_dates': item['evidence_dates']} for item in items]
                               for section, items in active.items()},
                 'tagging_entries': tagging, 'earlier_context': prior, 'new_turns': turns,
             })
@@ -339,6 +347,12 @@ class MemoryStore:
                      'Tag-only batches cannot change facts or forget.')
             updated, events, touched = copy.deepcopy(self.memory), [], set()
             catalogue_ids = {item['id'] for items in batch['catalogue'].values() for item in items}
+            # An inferred personal interest can cite older USER quotes from a
+            # retrieved topic. Never expose arbitrary archive evidence or bypass
+            # the per-section role checks / requirement for a relevant new turn.
+            supplied_sources = [s for items in batch['memory'].values()
+                                for item in items for s in item['evidence']
+                                if s['turn_id'] > self.memory['context_after_turn']]
             _require(set(forget_ids) <= catalogue_ids, 'Unknown forgotten memory ID.')
             for section in SECTIONS:
                 for item in list(updated[section]):
@@ -353,22 +367,20 @@ class MemoryStore:
                     'action', 'section', 'id', 'text', 'basis', 'retention', 'tags',
                     'expires_on', 'reason', 'evidence'}, 'Invalid operation fields.')
                 action, section, ident = op['action'], op['section'], op['id']
-                _require(action in ('add', 'update', 'reinforce', 'delete') and
+                _require(action in ('add', 'update', 'extend', 'reinforce', 'delete') and
                          section in SECTIONS and isinstance(ident, str), 'Invalid operation.')
+                _require(action != 'extend' or section == 'topics',
+                         'Only discussion topics can be extended.')
                 _require(_text(op['text'], 2000 if section == 'topics' else 800)
                          and _text(op['reason'], 400) and op['basis'] in ('explicit', 'inferred'),
                          'Invalid operation text or basis.')
                 _require(section != 'hal' or op['basis'] == 'explicit', 'HAL views need explicit evidence.')
                 roles = (('user',) if section == 'personal' else ('assistant',)
                          if section == 'hal' and action != 'delete' else ('user', 'assistant'))
-                supplied = next((i for i in batch['memory'][section] if i['id'] == ident), None)
                 sources = self._evidence(op['evidence'], turns, roles=roles,
-                    earlier=batch['earlier_context'], retained=supplied['evidence'] if supplied else ())
+                    earlier=batch['earlier_context'], retained=supplied_sources)
                 fresh = [s for s in sources if not s.get('context_only', False)]
                 _retention(op, section)
-                if op['retention'] == 'temporary':
-                    _require(action == 'delete' or _date(op['expires_on']) >= self.now().date(),
-                             'Topic expiry is in the past.')
                 tags = _tags(op['tags'], allow_empty=action == 'delete')
                 existing = next((i for i in updated[section] if i['id'] == ident), None)
                 if action == 'add':
@@ -379,8 +391,6 @@ class MemoryStore:
                     _require(existing is not None and ident in catalogue_ids and ident not in touched,
                              'Unknown or repeated memory id.')
                     touched.add(ident)
-                    _require(action == 'delete' or existing['retention'] != 'durable'
-                             or op['retention'] == 'durable', 'Durable memories cannot be downgraded.')
                 before = copy.deepcopy(existing)
                 if action == 'delete':
                     updated[section].remove(existing)
@@ -433,11 +443,6 @@ class MemoryStore:
             if not forget:
                 _require(all(key in indexed or key[1] in touched for key in expected_tags),
                          'Every pending indexing entry must receive tags or be updated/deleted.')
-            for item in list(updated['topics']):
-                if item['retention'] == 'temporary' and _date(item['expires_on']) < self.now().date():
-                    updated['topics'].remove(item)
-                    events.append({'action': 'delete', 'section': 'topics', 'before': item,
-                                   'after': None, 'reason': 'Temporary topic expired.'})
             if turns:
                 updated['last_processed_turn'] = batch['new_turns'][-1]['id']
             if forget:

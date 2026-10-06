@@ -124,10 +124,12 @@ class RetrievalTests(unittest.TestCase):
 
     def test_compact_entry_keeps_attribution_dates_retention_and_ids_without_evidence(self):
         memory = entry('hal-1', 'HAL tentatively favors this argument.', 'philosophy',
-                       basis='explicit', updated_at='2026-10-06T00:00:00+00:00', expires_on=None,
+                       basis='explicit', created_at='2026-10-01T00:00:00+00:00',
+                       updated_at='2026-10-06T00:00:00+00:00', expires_on=None,
                        retention='durable', evidence=[{'quote': 'Raw transcript.'}], evidence_count=1)
         compact = compact_entry(memory)
-        self.assertEqual(set(compact), {'id', 'text', 'tags', 'basis', 'updated_at', 'expires_on', 'retention'})
+        self.assertEqual(set(compact), {'id', 'text', 'tags', 'basis', 'created_at',
+                                       'updated_at', 'expires_on', 'retention'})
         compact['tags'].append('modified')
         self.assertEqual(memory['tags'], ['philosophy'])
 
