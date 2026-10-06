@@ -91,11 +91,11 @@ class LLMClient:
     def _get_timestamp(self):
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def begin_turn(self):
+    def begin_turn(self, user_input=''):
         """Refresh memory once per spoken request, not during external-API steps."""
         self.turn_started_at = datetime.now().astimezone().isoformat()
         if self.memory is not None:
-            snapshot = self.memory.read_context()
+            snapshot = self.memory.read_context(query=user_input)
             if snapshot is not None:
                 self.chat_history, self.memory_context = snapshot
 

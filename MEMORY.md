@@ -1,8 +1,10 @@
 # Persistent conversational memory
 
-HAL can keep recent conversation across restarts and gradually learn a compact
-set of personal facts and current topics. This feature is **off by default**.
-It makes additional paid OpenAI calls in the background. It uses the installed
+HAL can keep recent conversation across restarts, learn personal facts, remember
+his own expressed views and interests, and preserve meaningful discussions.
+This feature is **off by default**. It makes additional paid OpenAI calls in the
+background. Recall searches local records; it never makes an LLM search request.
+It uses the installed
 OpenAI package and Python's standard library; no database server, vector model,
 or additional dependency is required on the Mac or Pi.
 
@@ -27,7 +29,9 @@ The foreground still uses `LLM_MODEL`, its existing fast tier, and Luna's
 `reasoning_effort=none`. Background memory uses its own client, ordinary
 `service_tier=default`, and the configured reasoning effort. Higher reasoning
 may improve decisions, but does not guarantee correctness and can cost more.
-There is no extra memory-selection call before HAL answers.
+There is no extra memory-selection call before HAL answers. This update does
+not change microphone capture, listening windows, or HAL's conversational
+behavior; those remain separate features.
 
 Optional settings (defaults shown):
 
@@ -60,15 +64,30 @@ of the directory used to start HAL. The default Pi files are:
 /home/pi/Projects/HAL9000/data/memory/recent_conversation.json
 ```
 
-`memory.json` contains `personal` and `topics` arrays. Each entry has a stable
-`id`, short `text`, `basis` (`explicit` or `inferred`), dates, and a few supporting
-user quotes. Personal entries have `expires_on: null`. Topics use an ISO date,
-such as `2026-10-31`; without a more appropriate event date, the updater uses
-30 days. A topic is included through its expiry date and excluded afterward.
-Expired topics are removed on the next successful background update. Personal
-facts do not expire for age or inactivity.
+`memory.json` contains three sections:
 
-**Stop HAL before editing.** Edit entry text/basis as needed, or remove an entry
+| Section | Contents | Retention |
+| --- | --- | --- |
+| `personal` | Facts, preferences, interests, and views expressed by the user | Permanent until corrected or forgotten |
+| `hal` | HAL's own expressed views and interests, with brief reasons where useful | Permanent, but revisable |
+| `topics` | Current practical context and summaries of meaningful discussions | Temporary or durable |
+
+Each entry has a stable `id`, compact `text`, `basis` (`explicit` or `inferred`),
+search `tags`, dates, and supporting evidence attributed to the user or HAL.
+Personal and HAL entries have `expires_on: null`. Temporary topics have an ISO
+expiry date; without a more appropriate event date, the updater uses 30 days.
+They remain active through their expiry date and are removed on a subsequent
+successful background update. Durable topics have no expiry. Permanent entries
+are not deleted because they are old or were not selected by a search.
+
+Existing version-1 memory files are migrated locally without losing personal
+facts or changing the meaning of temporary topic notes. Existing untagged entries
+are queued for background tag enrichment, at most 20 per batch. This uses the
+same updater and may make paid calls at startup even when there is no new spoken
+exchange. Records remain available for text matching while tagging is pending.
+Migration does not require feeding the full archive into every foreground prompt.
+
+**Stop HAL before editing.** Edit entry text/basis/tags as needed, or remove an entry
 from its array, preserving valid JSON and the other fields. Leave `version`,
 `last_processed_turn`, `context_after_turn`, and existing IDs intact. Then restart.
 For a new entry, the simplest route is to tell HAL the fact, then edit its entry.
@@ -92,18 +111,24 @@ today's live information. There is no import of old logs or raw microphone audio
 
 Only accepted speech and the final completed spoken response enter this store.
 Ignored/end follow-ups, failed turns and intermediate external API payloads are
-excluded. The assistant's reply helps interpret references but is never accepted
-as evidence for a personal fact. All speech is assumed to be from the user
+excluded. HAL's reply may support a HAL-view entry or his side of a discussion
+summary; it is never accepted as evidence for a personal fact about the user.
+All speech is assumed to be from the user
 named by `HAL_USER_NAME` in `.env`;
 there is no speaker identification in this version.
 
 After playback finishes, a single background worker processes one new exchange
-per API call, in order, with existing memories and a few earlier exchanges for
-context. A request
-can propose additions, updates, reinforcement, deletions, or no changes. Every
-change must cite an exact quote from a new accepted user turn. Application code
-validates the entire patch before writing anything; semantic judgments still
-depend on the model and should be checked in the log.
+per API call, in order, with locally selected existing memories and a few earlier
+exchanges for context. The same call handles personal facts, HAL views, discussion
+notes, and search tags; these do not each require a separate call. Pending tag
+enrichment can accompany that exchange or run by itself at startup.
+
+A request can propose additions, updates, reinforcement, deletions, or no changes.
+Content changes must cite exact quotes from the accepted exchange with the correct
+speaker role. Tag-only enrichment uses the existing record as its source and
+cannot rewrite its content or fabricate new evidence. Application code validates
+the entire patch before writing anything; semantic judgments still depend on the
+model and should be checked in the log.
 
 The updater is instructed to preserve explicit facts, mark uncertain inferences,
 merge duplicates, correct contradictions, and ignore routine weather/time facts.
@@ -112,10 +137,31 @@ does not prove fandom. Reinforcement records evidence dates, and processing a
 saved exchange again after a crash cannot count it twice. Corrections replace
 old supporting evidence rather than treating it as support for the new claim.
 
+HAL's views are learned from positions he actually expresses. A quoted opinion,
+role-play, hypothetical argument, or devil's advocacy should not become his own
+belief. Tentative views remain tentative. A changed position replaces the old
+position while retaining a useful explanation of the change in the text. These
+records are context, not permission to rewrite HAL's core persona or instructions.
+
+Topic notes preserve each participant's position, important conclusions or
+disagreements, and unresolved questions. Meaningful discussions can be made
+durable; routine weather and time answers should not become a permanent archive.
+Later discussion should update the relevant note rather than create many
+near-identical summaries. Bounded transcripts still contain the exact recent
+conversation; older durable notes preserve its substance, not every word.
+
+The updater supplies generous but relevant tags for every new or updated memory:
+names and aliases, broader subjects, related concepts, and useful synonyms.
+For example, “Torgo is a Vikings fan” should have tags covering `Vikings`,
+`Minnesota Vikings`, `NFL`, `football`, `sports`, and `fandom`. Tags describe the
+record; they do not independently establish new facts. They improve local recall
+for broader questions without maintaining a special-case football dictionary.
+
 You can say “Remember that my cat is named Miso,” “Actually, his name is Milo,”
 or “Forget my cat's name.” Ordinary mentions can also become memories. A forget
-decision deletes matching personal entries and clears active topic notes and
-earlier recent context, to prevent them from recreating the detail. This happens
+decision deletes affected records across all three sections while preserving
+unrelated memories, including durable discussions. It also clears earlier recent
+context so that context cannot recreate the detail. This happens
 asynchronously; look for completion in `memory.log`. New statements after that
 request can still be learned. Forgetting is not erasure of diagnostic logs or
 backup files, which you can manage separately. Per-conversation privacy mode
@@ -123,11 +169,35 @@ is not implemented; use `MEMORY_ENABLED=false` and restart to disable this featu
 
 ## Recall, responsiveness and failures
 
-Before each new spoken request, HAL reads an in-memory snapshot containing all
-personal memories and unexpired topics, plus recent conversation. These are sent
-with the persona in the existing foreground request. Memory is explicitly labeled
-as data, not instructions, and inferred information is identified as tentative.
-An external-API continuation uses the same snapshot for consistency.
+After transcribing each spoken request, HAL uses that exact text and recent
+conversation to search active local records across all three sections. Matching
+is deliberately permissive: a relevant text or tag match can make a record a
+candidate without requiring every query word to appear. Records are ranked and
+selected within a bounded context budget. Current-query matches take priority
+over matches found only in the last three accepted exchanges. Recent context
+helps interpret short replies such as “What about that?” There is no fixed number
+of results. Ordinary searches require a text or tag match. Explicit overview
+questions such as “What do you remember about me?” can also select a bounded
+sample from the relevant section, even when the question has no useful keywords.
+These overview selections are labeled separately in the retrieval log. Case, accents,
+possessives, and common plurals are normalized before matching.
+
+The foreground request receives recent conversation plus this selected memory
+snapshot. Memory is explicitly labeled as data, not instructions, and inferred
+information is identified as tentative. An external-API continuation reuses the
+same snapshot; HAL does not search again on a weather result or other tool payload.
+There is no model-requested archive search, embedding API, or second foreground
+call to choose memories. If an entry is missing from the selected subset, that
+does not mean it is absent from the archive.
+
+The background updater receives locally selected existing entries with evidence,
+plus a compact catalogue of all active entries containing IDs, text, tags, and
+retention information. The catalogue lets it identify corrections, duplicates,
+and affected records to forget even when local search misses an association.
+This preserves broad maintenance coverage in one request, but background input
+still grows with the archive; only the foreground selection stays bounded.
+Legacy tag enrichment is separately bounded to keep migration progressing even
+when old entries are unrelated to current speech.
 
 The background worker never holds a storage lock while waiting for the API.
 HAL can continue answering and recording completed turns during a slow update.
@@ -141,11 +211,17 @@ Shutdown waits at most one second for the worker; pending work resumes later.
 Updating memory and marking its input processed is one atomic write, so a crash
 between that write and recent-history cleanup cannot apply a change twice.
 
-`MEMORY_SOFT_TOKEN_BUDGET` is a warning threshold, estimated from character count,
-not an exact tokenizer or a deletion limit. All active memories remain included
-if it is exceeded. Individual entries are limited to 800 characters. No selective
-retrieval is performed in this version; use actual memory size and timing results
-to decide whether it is needed later.
+`MEMORY_SOFT_TOKEN_BUDGET` now controls local selection instead of merely warning
+about a large archive. It estimates tokens from character count, so it is not an
+exact model-token limit. It applies to selected memory records in foreground recall
+and the updater's selected records; the persona, recent transcript, new exchange,
+compact archive catalogue, tagging work, and other prompt material are additional.
+It never deletes stored records.
+
+Tags help with the gap between a broad query such as “football” and a narrower
+fact such as Vikings fandom. Pure local text matching can still miss unexpected
+paraphrases, and a full budget can exclude lower-ranked matches. Evaluate the
+logged results before tuning tags or increasing the budget.
 
 ## Separate memory log
 
@@ -154,12 +230,19 @@ Detailed records are written to **`memory.log` inside `LOG_PATH`**, alongside
 and does not get pushed to HAL's display. It records:
 
 - Accepted exchanges queued for processing and the IDs of each update batch.
+- The actual retrieval query, recent context used to supplement it, normalized
+  search terms, matching/ranking details, selected record IDs and text, and records
+  omitted because the context budget was full. Foreground and updater searches
+  are identified separately. Explicit memory-overview selections are identified
+  as browsing rather than reported as keyword matches.
 - Add/update/reinforce/delete decisions with before/after entries, supporting
   quotes, and a short explanation. No-change batches are recorded too.
-- Topic expiry, forget requests, rejected patches, failures and API token usage.
+- Legacy tagging batches, topic expiry, forget requests, rejected patches,
+  failures and API token usage.
 
 These are concise explanations of decisions, not the model's private reasoning.
-The main HAL log/terminal gets a brief completion or failure message. The separate
+The main HAL log/terminal gets a brief retrieval-size, completion, or failure
+message; full search details stay in `memory.log`. The separate
 file rotates at approximately 2 MB, keeping three previous files (`memory.log.1`
 through `.3`). Inspect it with `tail -f /your/LOG_PATH/memory.log`, substituting
 your existing log directory.
@@ -170,4 +253,7 @@ Automated tests use temporary JSON stores and mocked HTTP responses with the
 installed OpenAI SDK; they make no paid calls. They exercise restart persistence,
 fact correction, reinforcement, expiry, forgetting, evidence validation, crash
 recovery, concurrent recording during a stalled update, and foreground/follow-up
-integration. Live model decision quality still needs evaluation with your speech.
+integration. They also cover tagged retrieval, retention and speaker attribution,
+migration and legacy tagging, and reuse of the selected snapshot across API
+continuations. Live model decision and tag quality still need evaluation with
+your speech.

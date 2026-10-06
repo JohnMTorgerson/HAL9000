@@ -114,7 +114,6 @@ class ConversationMemory:
         self.wake = threading.Event()
         self.stopping = threading.Event()
         self.available = True
-        self.last_budget_warning = None
         self.thread = threading.Thread(target=self._run, name='HAL-memory', daemon=True)
         self.thread.start()
         self.wake.set()  # Resume saved pending work after a restart.
@@ -152,18 +151,15 @@ class ConversationMemory:
                        settings.directory, settings.model, settings.reasoning, settings.max_tokens)
         return cls(store, updater, settings, logger, decisions)
 
-    def read_context(self):
+    def read_context(self, query=''):
         if not self.available:
             return None
-        history, facts = self.store.recall()
-        # An estimate, not a model-specific tokenizer or a hard deletion limit.
+        history, facts = self.store.recall(query=query, token_budget=self.settings.soft_tokens)
+        # Selection is bounded by a character estimate, never by deleting data.
+        # Detailed queries, matching terms, and selected entries stay in memory.log.
         estimated = (len(facts) + 3) // 4
-        if estimated > self.settings.soft_tokens and estimated != self.last_budget_warning:
-            self.last_budget_warning = estimated
-            self.logger.warning('Memory context is about %s tokens (character estimate), above the %s soft target; '
-                                'all active memories are still included.', estimated, self.settings.soft_tokens)
-            self.decisions.warning('Memory soft budget exceeded: estimated_tokens=%s target=%s; nothing deleted.',
-                                   estimated, self.settings.soft_tokens)
+        self.logger.info('Memory recall: about %s tokens selected (character estimate); details in memory.log.',
+                         estimated)
         return history, recall_instructions() + '\n' + facts
 
     def record_turn(self, user_speech, assistant_reply, at=None):
@@ -195,10 +191,12 @@ class ConversationMemory:
             while not self.stopping.is_set():
                 self.wake.wait()
                 self.wake.clear()
-                while not self.stopping.is_set() and (batch := self.store.next_batch()) is not None:
+                while not self.stopping.is_set() and (
+                        batch := self.store.next_batch(token_budget=self.settings.soft_tokens)) is not None:
                     started = time.perf_counter()
-                    self.decisions.info('Memory update started: turns=%s previous_cursor=%s.',
-                                        [t['id'] for t in batch['new_turns']], batch['cursor'])
+                    self.decisions.info('Memory update started: turns=%s tagging_entries=%s previous_cursor=%s.',
+                                        [t['id'] for t in batch['new_turns']],
+                                        len(batch.get('tagging_entries', [])), batch['cursor'])
                     try:
                         changes = self.updater.update(batch)
                     except Exception as exc:

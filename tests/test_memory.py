@@ -18,14 +18,16 @@ from memory_store import MemoryStore
 from llm_client import LLMClient
 
 
-def changes(*operations, forget=False, forget_evidence=None):
-    return {'forget': forget, 'forget_evidence': forget_evidence or [], 'operations': list(operations)}
+def changes(*operations, forget=False, forget_evidence=None, forget_ids=None, tag_updates=None):
+    return {'forget': forget, 'forget_ids': forget_ids or [], 'forget_evidence': forget_evidence or [],
+            'tag_updates': tag_updates or [], 'operations': list(operations)}
 
 
 def operation(turn, text, *, action='add', ident='', section='personal', basis='explicit', expires=None):
     return {'action': action, 'section': section, 'id': ident, 'text': text, 'basis': basis,
-            'expires_on': expires, 'reason': 'New user information supports this change.',
-            'evidence': [{'turn_id': turn['id'], 'quote': turn['user_speech']}]}
+            'expires_on': expires, 'retention': 'temporary' if expires else 'durable',
+            'tags': [text.lower()], 'reason': 'New user information supports this change.',
+            'evidence': [{'turn_id': turn['id'], 'role': 'user', 'quote': turn['user_speech']}]}
 
 
 def completion(content, finish='stop', refusal=None):
@@ -67,7 +69,7 @@ class StoreTests(unittest.TestCase):
             self.store.apply(batch, changes())
         self.store.close()
         restored = self.open_store()
-        history, facts = restored.recall()
+        history, facts = restored.recall('What is my cat called?')
         self.assertIn('cat named Miso', facts)
         self.assertNotIn('forecast', facts)
         self.assertEqual(len(history), 4)
@@ -107,9 +109,9 @@ class StoreTests(unittest.TestCase):
         op = operation(batch['new_turns'][0], 'Planning a Halloween costume.',
                        section='topics', expires='2026-10-31')
         self.store.apply(batch, changes(op))
-        self.assertIn('Halloween', self.store.recall()[1])
+        self.assertIn('Halloween', self.store.recall('Halloween')[1])
         self.now += timedelta(days=31)
-        facts = self.store.recall()[1]
+        facts = self.store.recall('cat and Halloween')[1]
         self.assertNotIn('Halloween', facts)
         self.assertIn('Miso', facts)
         self.store.apply(self.say('What time is it?'), changes())
@@ -124,8 +126,9 @@ class StoreTests(unittest.TestCase):
         turn = batch['new_turns'][0]
         # A later statement queued while reasoning is in flight must survive.
         self.store.record_turn('My new project is building a clock.', 'Understood.')
-        self.store.apply(batch, changes(operation(turn, 'The user has a cat named Miso.', action='delete', ident=ident),
-                                       forget=True, forget_evidence=[{'turn_id': turn['id'], 'quote': turn['user_speech']}]))
+        self.store.apply(batch, changes(forget=True,
+            forget_ids=[ident, self.store.memory['topics'][0]['id']],
+            forget_evidence=[{'turn_id': turn['id'], 'role': 'user', 'quote': turn['user_speech']}]))
         self.store.close()
         self.store = self.open_store()
         history, facts = self.store.recall()
@@ -155,7 +158,7 @@ class StoreTests(unittest.TestCase):
         op['evidence'][0]['quote'] = 'Your cat is named Dave.'
         with self.assertRaisesRegex(ValueError, 'exact user speech'):
             self.store.apply(batch, changes(op))
-        op['evidence'][0] = {'turn_id': 999, 'quote': 'Tell me a story.'}
+        op['evidence'][0] = {'turn_id': 999, 'role': 'user', 'quote': 'Tell me a story.'}
         with self.assertRaisesRegex(ValueError, 'NEW accepted'):
             self.store.apply(batch, changes(op))
         self.assertEqual(self.store.memory['personal'], [])

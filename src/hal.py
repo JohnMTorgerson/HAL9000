@@ -270,7 +270,7 @@ def run():
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
             # get HAL's response from LLM
             llm.image_context = images.context()
-            llm.begin_turn()
+            llm.begin_turn(user_input)
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
             if trigger_kind == 'followup':
