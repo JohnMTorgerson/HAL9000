@@ -189,6 +189,8 @@ class MemoryStore:
                              'Personal memory evidence must come from the user.')
                     _require(section != 'hal' or source['role'] == 'assistant',
                              'HAL memory evidence must come from HAL.')
+                    _require(type(source.get('context_only', False)) is bool,
+                             'Invalid evidence context marker.')
                     datetime.fromisoformat(source['at'])
 
     @staticmethod
@@ -278,22 +280,38 @@ class MemoryStore:
             })
 
     @staticmethod
-    def _evidence(sources, turns, *, roles=('user',)):
-        _require(isinstance(sources, list) and 1 <= len(sources) <= 3, 'Each change needs 1–3 new sources.')
+    def _evidence(sources, turns, *, roles=('user',), earlier=(), retained=()):
+        _require(isinstance(sources, list) and 1 <= len(sources) <= 3, 'Each change needs 1–3 sources.')
+        context = {turn['id']: turn for turn in earlier}
         result, seen = [], set()
         for source in sources:
             _require(isinstance(source, dict) and set(source) == {'turn_id', 'role', 'quote'},
                      'Invalid source fields.')
             ident, quote, role = source['turn_id'], source['quote'], source['role']
             _require(role in roles, 'Evidence role is not allowed for this memory change.')
-            _require(type(ident) is int and ident in turns and (ident, role) not in seen,
-                     'Evidence must cite distinct speaker sources in NEW accepted turns.')
-            speech = (turns[ident]['user_speech'] if role == 'user' else
-                      turns[ident]['assistant_reply'].split('\n[Application action result:', 1)[0])
+            _require(type(ident) is int and (ident, role) not in seen,
+                     'Evidence must cite distinct speaker sources.')
+            turn = turns.get(ident) or context.get(ident)
+            original = None
+            if turn is not None:
+                speech = (turn['user_speech'] if role == 'user' else
+                          turn['assistant_reply'].split('\n[Application action result:', 1)[0])
+                at = turn['at']
+            else:
+                original = next((s for s in retained if s['turn_id'] == ident and s['role'] == role
+                                 and isinstance(quote, str) and quote in s['quote']), None)
+                _require(original is not None,
+                         'Evidence must cite NEW accepted turns or supplied supporting context.')
+                speech, at = original['quote'], original['at']
             _require(_text(quote, 300) and quote in speech,
                      'Evidence quote must be exact user speech or HAL speech from its declared role.')
             seen.add((ident, role))
-            result.append({'turn_id': ident, 'at': turns[ident]['at'], 'role': role, 'quote': quote})
+            item = {'turn_id': ident, 'at': at, 'role': role, 'quote': quote}
+            if ident not in turns:
+                item['context_only'] = True
+            result.append(item)
+        _require(any(s['turn_id'] in turns for s in result),
+                 'Each change requires evidence from a NEW accepted turn; context cannot reinforce itself.')
         return result
 
     def apply(self, batch, changes):
@@ -343,7 +361,10 @@ class MemoryStore:
                 _require(section != 'hal' or op['basis'] == 'explicit', 'HAL views need explicit evidence.')
                 roles = (('user',) if section == 'personal' else ('assistant',)
                          if section == 'hal' and action != 'delete' else ('user', 'assistant'))
-                sources = self._evidence(op['evidence'], turns, roles=roles)
+                supplied = next((i for i in batch['memory'][section] if i['id'] == ident), None)
+                sources = self._evidence(op['evidence'], turns, roles=roles,
+                    earlier=batch['earlier_context'], retained=supplied['evidence'] if supplied else ())
+                fresh = [s for s in sources if not s.get('context_only', False)]
                 _retention(op, section)
                 if op['retention'] == 'temporary':
                     _require(action == 'delete' or _date(op['expires_on']) >= self.now().date(),
@@ -379,10 +400,14 @@ class MemoryStore:
                     if action == 'update':
                         existing['evidence_count'] = 0
                         existing['evidence_dates'] = []
-                    existing['evidence_count'] += len(sources)
-                    dates = existing['evidence_dates'] + [s['at'][:10] for s in sources]
+                    existing['evidence_count'] += len(fresh)
+                    dates = existing['evidence_dates'] + [s['at'][:10] for s in fresh]
                     existing['evidence_dates'] = sorted(set(dates))[-12:]
                     evidence = [] if action == 'update' else existing['evidence']
+                    # A re-cited old quote replaces its prior representation,
+                    # without duplicating or counting it as new corroboration.
+                    cited = {(s['turn_id'], s['role']) for s in sources}
+                    evidence = [s for s in evidence if (s['turn_id'], s['role']) not in cited]
                     existing['evidence'] = (evidence + sources)[-3:]
                     after = copy.deepcopy(existing)
                 events.append({'action': action, 'section': section, 'before': before,

@@ -38,6 +38,23 @@ fandom; repeated interest on separate evidence_dates may support a tentative
 inference. Do not mistake quotations, hypotheticals, fiction or another person's
 biography for the user's life. Keep distinct people/pets separate.
 
+Check separately for a lasting personal fact AND a temporary situation in the
+same utterance; a topic note must not substitute for a useful personal memory.
+Direct references to the user's own recurring activities/commitments can support
+a cautious personal inference on FIRST mention. For example, deciding whether to
+attend their choir rehearsal tonight can support both an explicit temporary
+attendance decision and an inferred personal fact that they sing in a choir.
+Likewise their own team practice or lesson can indicate ongoing participation.
+Do not infer membership merely from attending a concert, accompanying somebody
+else, or explicitly trying a one-off guest activity. The repeated-interest rule
+for trivia does not require repeated proof of the user's own stated activities.
+
+basis describes how the saved claim is supported, NOT the user's confidence in
+their decision. 'I am deciding whether to go' explicitly supports being undecided.
+Resolving 'it' from prior dialogue does not by itself make a claim inferred.
+Mark only conclusions beyond what the user stated as inferred. Split an explicit
+temporary plan and an inferred lasting participation fact into separate entries.
+
 hal: HAL's own adopted views, preferences and recurring intellectual interests.
 For add/update/reinforce, evidence MUST quote assistant_reply with role=assistant,
 basis=explicit. Save only a position he actually expressed as his own, with brief
@@ -83,8 +100,17 @@ the user, delete that obsolete HAL entry; do not invent a replacement HAL positi
 reinforce retains text, basis and retention; temporary expiry may extend. delete
 copies the existing text, basis, retention, tags and expiry. Give a short user-facing
 reason, not internal reasoning. Maximum 20 ordinary operations. Every operation
-requires 1-3 exact nonempty quotes (<=300 characters) from NEW turns; evidence fields:
-turn_id, role (user or assistant), quote. Multiple roles in the same turn are allowed.
+requires 1-3 exact nonempty quotes (<=300 characters); evidence fields are turn_id,
+role (user or assistant), quote. At least ONE quote must come from a NEW turn and
+actually support the change or reinforcement. You may additionally cite supplied
+earlier_context, or supporting evidence already supplied for the entry being
+updated. Include the original substantive statement when a new 'it', 'that' or
+'yes' depends on it; do not leave a vague continuation as the sole source. When
+updating a cumulative discussion, retain still-valid original source quotes for
+claims carried forward, and discard quotes invalidated by a correction. The app
+marks older quotes context_only and excludes them from fresh evidence counts.
+Old material alone and unrelated new chatter cannot justify relearning a fact.
+Multiple roles in the same turn are allowed. Forget evidence must be NEW user speech.
 
 For EACH older untagged memory in tagging_entries return one tag_updates item
 (section, id, tags), unless an ordinary operation already updates or deletes it.

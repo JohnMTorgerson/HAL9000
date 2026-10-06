@@ -321,6 +321,107 @@ class MemoryV2Tests(unittest.TestCase):
         self.assertIn('football', selected['tags'])
         self.assertIn('football', selected['matched']['query']['tags'])
 
+    def test_plan_and_personal_inference_can_cite_original_statement_and_new_continuation(self):
+        first = self.say('I am deciding whether to go to choir practice tonight.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change())
+        self.now += timedelta(days=1)
+        batch = self.say('Yes, I still do not know if I feel up to it.')
+        turn = batch['new_turns'][0]
+        personal = operation(turn, 'Torgo appears to sing in a choir.', tags=['choir', 'singing', 'music'],
+                             evidence=[source(original), source(turn)])
+        personal['basis'] = 'inferred'
+        topic = operation(turn, 'Torgo was deciding whether to attend choir practice.',
+                          section='topics', retention='temporary', expiry=self.now.date().isoformat(),
+                          tags=['choir', 'attendance'], evidence=[source(original), source(turn)])
+        self.store.apply(batch, change(personal, topic))
+        self.assertEqual(self.store.memory['personal'][0]['basis'], 'inferred')
+        self.assertEqual(self.store.memory['topics'][0]['basis'], 'explicit')
+        for section in ('personal', 'topics'):
+            item = self.store.memory[section][0]
+            self.assertEqual(item['evidence'][0]['quote'], original['user_speech'])
+            self.assertTrue(item['evidence'][0]['context_only'])
+            self.assertNotIn('context_only', item['evidence'][1])
+            self.assertEqual(item['evidence_count'], 1)
+            self.assertEqual(item['evidence_dates'], [self.now.date().isoformat()])
+
+    def test_old_context_alone_cannot_create_or_reinforce_memory(self):
+        first = self.say('I have orchestra rehearsal tonight.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(operation(original, 'Torgo plays in an orchestra.',
+                                                tags=['orchestra', 'music'])))
+        ident = self.store.memory['personal'][0]['id']
+        batch = self.say('What is the time?')
+        before = (self.directory / 'memory.json').read_bytes()
+        for action in ('add', 'reinforce'):
+            op = operation(batch['new_turns'][0], 'Torgo plays in an orchestra.', action=action,
+                           ident=ident if action == 'reinforce' else '', evidence=[source(original)])
+            with self.subTest(action=action), self.assertRaisesRegex(ValueError, 'NEW accepted turn'):
+                self.store.apply(batch, change(op))
+            self.assertEqual((self.directory / 'memory.json').read_bytes(), before)
+
+    def test_context_quotes_still_require_correct_speaker_and_exact_text(self):
+        first = self.say('I am going to a concert.', 'I enjoy choral music.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change())
+        batch = self.say('That sounds interesting.')
+        turn = batch['new_turns'][0]
+        invalid = [source(original, quote='I sing in a choir.'), source(original, role='assistant')]
+        for prior in invalid:
+            with self.subTest(prior=prior), self.assertRaises(ValueError):
+                self.store.apply(batch, change(operation(turn, 'Torgo sings in a choir.',
+                                                        evidence=[prior, source(turn)])))
+        self.assertEqual(self.store.memory['personal'], [])
+
+    def test_cumulative_topic_can_keep_evidence_older_than_recent_transcript(self):
+        first = self.say('I believe musical interpretation should allow flexibility.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(operation(original, 'Torgo favors flexible musical interpretation.',
+                                                section='topics', tags=['music', 'interpretation'])))
+        ident = self.store.memory['topics'][0]['id']
+        for _ in range(3):
+            self.store.apply(self.say('What time is it?'), change())
+        self.now += timedelta(days=1)
+        batch = self.say('But musical interpretation should still respect the structure.')
+        self.assertNotIn(original['id'], [t['id'] for t in batch['earlier_context']])
+        turn = batch['new_turns'][0]
+        self.store.apply(batch, change(operation(turn,
+            'Torgo favors flexibility in musical interpretation while respecting structure.',
+            section='topics', action='update', ident=ident, tags=['music', 'interpretation'],
+            evidence=[source(original), source(turn)])))
+        note = self.store.memory['topics'][0]
+        self.assertEqual([s['turn_id'] for s in note['evidence']], [original['id'], turn['id']])
+        self.assertTrue(note['evidence'][0]['context_only'])
+        self.assertEqual(note['evidence_count'], 1)
+        self.store.close()
+        self.store = self.open_store()
+        self.assertEqual(self.store.memory['topics'][0], note)
+
+    def test_reciting_saved_quote_does_not_duplicate_or_count_it_again(self):
+        first = self.say('I sing in a choir.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(operation(original, 'Torgo sings in a choir.', tags=['choir'])))
+        ident = self.store.memory['personal'][0]['id']
+        batch = self.say('I still sing in the same choir.')
+        turn = batch['new_turns'][0]
+        self.store.apply(batch, change(operation(turn, 'Torgo sings in a choir.', action='reinforce',
+            ident=ident, tags=['choir'], evidence=[source(original), source(turn)])))
+        note = self.store.memory['personal'][0]
+        self.assertEqual(note['evidence_count'], 2)
+        self.assertEqual(len(note['evidence']), 2)
+        self.assertTrue(note['evidence'][0]['context_only'])
+
+    def test_forget_cannot_be_triggered_by_an_old_request(self):
+        first = self.say('Forget my previous plans.')
+        original = first['new_turns'][0]
+        self.store.apply(first, change(forget=True, forget_evidence=[source(original)]))
+        batch = self.say('I sing in a choir.')
+        # Even a fabricated earlier-context list cannot make old evidence valid
+        # for a destructive forget; that path only accepts current user speech.
+        batch['earlier_context'] = [original]
+        with self.assertRaisesRegex(ValueError, 'NEW accepted turns'):
+            self.store.apply(batch, change(forget=True, forget_evidence=[source(original)]))
+
 
 if __name__ == '__main__':
     unittest.main()

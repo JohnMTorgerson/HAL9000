@@ -124,8 +124,13 @@ notes, and search tags; these do not each require a separate call. Pending tag
 enrichment can accompany that exchange or run by itself at startup.
 
 A request can propose additions, updates, reinforcement, deletions, or no changes.
-Content changes must cite exact quotes from the accepted exchange with the correct
-speaker role. Tag-only enrichment uses the existing record as its source and
+Content changes must cite at least one exact quote from the newly accepted exchange
+with the correct speaker role. They may also cite the supplied earlier dialogue
+or still-valid evidence of the existing entry being updated. This keeps the actual
+subject statement alongside a continuation such as “I do not feel up to it.”
+Older quotes are marked `context_only: true` and do not increase fresh evidence
+counts or evidence dates. Old context alone cannot create or reinforce a memory,
+and forget requests still require new user speech. Tag-only enrichment uses the existing record as its source and
 cannot rewrite its content or fabricate new evidence. Application code validates
 the entire patch before writing anything; semantic judgments still depend on the
 model and should be checked in the log.
@@ -135,7 +140,16 @@ merge duplicates, correct contradictions, and ignore routine weather/time facts.
 Recurring interests should be supported across separate days; one trivia query
 does not prove fandom. Reinforcement records evidence dates, and processing a
 saved exchange again after a crash cannot count it twice. Corrections replace
-old supporting evidence rather than treating it as support for the new claim.
+contradicted supporting evidence rather than treating it as support for the new
+claim; cumulative discussion updates may explicitly retain still-valid sources.
+
+The updater checks separately for lasting personal information and temporary
+situations within the same statement. Mentioning the user's own choir rehearsal,
+for example, can support both a temporary attendance decision and a cautious
+personal inference that they sing in a choir. Repetition is not required for this
+kind of direct autobiographical implication. Attending a concert or accompanying
+somebody else does not establish participation. `basis` describes the source of
+the claim: an explicitly stated uncertainty or indecision remains `explicit`.
 
 HAL's views are learned from positions he actually expresses. A quoted opinion,
 role-play, hypothetical argument, or devil's advocacy should not become his own
