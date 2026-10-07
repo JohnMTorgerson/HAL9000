@@ -135,6 +135,11 @@ with the correct speaker role. They may also cite the supplied earlier dialogue
 or still-valid evidence of any locally selected memory, including user quotes
 from a topic when creating an inferred personal interest. This keeps the actual
 subject statement alongside a continuation such as “I do not feel up to it.”
+Each evidence quote is limited to 300 characters in both the API output schema
+and local validation. For a longer message, the updater must choose a short,
+exact, contiguous excerpt that preserves relevant qualifications; fuller discussion
+details belong in the summary. HAL does not truncate or rewrite evidence to make
+a rejected patch pass, and this adds no extra API calls.
 Older quotes are marked `context_only: true` and do not increase fresh evidence
 counts or evidence dates. Old context alone cannot create or reinforce a memory,
 and forget requests still require new user speech. Tag-only enrichment uses the existing record as its source and

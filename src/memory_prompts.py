@@ -145,7 +145,12 @@ reinforce retains text, basis and retention. delete
 copies the existing text, basis, retention, tags and expiry. Give a short user-facing
 reason, not internal reasoning. Maximum 20 ordinary operations. Every operation
 requires 1-3 exact nonempty quotes (<=300 characters); evidence fields are turn_id,
-role (user or assistant), quote. At least ONE quote must come from a NEW turn and
+role (user or assistant), quote. Quote a short, contiguous excerpt, not the whole
+message when it is long. Choose a complete sentence or meaningful clause that
+supports the memory, keeping any qualifications or negation needed for its meaning.
+Copy it exactly: no paraphrasing, added ellipses, or joining separate passages.
+The 300-character limit applies to EACH quote, not the memory summary; longer
+discussion details belong in the summary. At least ONE quote must come from a NEW turn and
 actually support the change or reinforcement. You may additionally cite supplied
 earlier_context, or supporting evidence in ANY supplied memory record, including
 USER quotes from a topic when adding an inferred personal interest. Per-section
@@ -191,7 +196,15 @@ def _object(properties):
 _TAGS = {'type': 'array', 'items': {'type': 'string'}}
 _SOURCE = _object({'turn_id': {'type': 'integer'},
                    'role': {'type': 'string', 'enum': ['user', 'assistant']},
-                   'quote': {'type': 'string'}})
+                   'quote': {
+                       # Structured Outputs explicitly supports string patterns.
+                       # Include newlines in the bound; literal source checks
+                       # and the final character limit remain in MemoryStore.
+                       'type': 'string', 'pattern': r'^[\s\S]{1,300}$',
+                       'description': ('An exact contiguous excerpt from the cited speaker, '
+                                       'at most 300 characters. Select a meaningful short '
+                                       'passage; do not copy a longer message in full.'),
+                   }})
 MEMORY_FORMAT = {
     'type': 'json_schema',
     'json_schema': {

@@ -3,6 +3,7 @@ import copy
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import threading
@@ -241,6 +242,16 @@ class APITests(unittest.TestCase):
         self.assertEqual(body['max_completion_tokens'], 8192)
         self.assertEqual(body['service_tier'], 'default')
         self.assertTrue(body['response_format']['json_schema']['strict'])
+        schema = body['response_format']['json_schema']['schema']['properties']
+        # The limit must reach the API for ordinary changes AND forget requests;
+        # a prompt-only limit previously allowed whole, overlong replies through.
+        for evidence in (schema['operations']['items']['properties']['evidence'],
+                         schema['forget_evidence']):
+            quote = evidence['items']['properties']['quote']
+            for allowed in ('A', 'A' * 300, 'é' * 300, 'A\n' * 150):
+                self.assertIsNotNone(re.search(quote['pattern'], allowed))
+            for rejected in ('', 'A' * 301, 'A' * 379):
+                self.assertIsNone(re.search(quote['pattern'], rejected))
         self.assertNotIn('tools', body)
         self.assertNotIn('temperature', body)
         self.assertNotIn('pod bay', body['messages'][0]['content'])

@@ -71,6 +71,47 @@ def test_exact_300_character_evidence_is_still_accepted():
     assert result[0]['quote'] == speech
 
 
+def test_overlong_reply_can_be_saved_with_exact_excerpt_after_restart(tmp_path):
+    # The 379-character answer from the reported F-106 rejection. The summary
+    # can retain the full discussion even though its evidence uses an excerpt.
+    reply = (
+        'NASA used the F-106s for flight research and experiments, not as operational fighters. '
+        'The two-seat F-106B tested supersonic engines and fighter maneuverability, and one '
+        'aircraft was modified to study lightning strikes. Later, six converted QF-106 drones '
+        'took part in the Eclipse project, testing whether a transport aircraft could tow and '
+        'launch a reusable space-launch vehicle.'
+    )
+    store = MemoryStore(tmp_path, logger=Mock())
+    try:
+        store.record_turn('What does NASA use them for?', reply)
+        batch = store.next_batch()
+        turn = batch['new_turns'][0]
+        proposal = change(operation(turn, reply, section='topics',
+                                    evidence=[source(turn, 'assistant')]))
+        with pytest.raises(EvidenceValidationError) as err:
+            store.apply(batch, proposal)
+        assert err.value.details['quote_length'] == 379
+        assert store.memory['topics'] == []
+        assert store.memory['last_processed_turn'] == 0
+    finally:
+        store.close()
+
+    store = MemoryStore(tmp_path, logger=Mock())
+    try:
+        batch = store.next_batch()
+        assert batch['new_turns'][0] == turn
+        excerpt = reply.split('. ', 1)[0] + '.'
+        proposal['operations'][0]['evidence'][0]['quote'] = excerpt
+        store.apply(batch, proposal)
+        saved = store.memory['topics'][0]
+        assert saved['text'] == reply
+        assert saved['evidence'][0]['quote'] == excerpt
+        assert store.memory['last_processed_turn'] == turn['id']
+        assert store.next_batch() is None
+    finally:
+        store.close()
+
+
 def test_wrong_role_and_unavailable_turn_have_distinct_diagnostics():
     turn = {'id': 1, 'at': '2026-10-07T12:00:00+00:00',
             'user_speech': 'Hello.', 'assistant_reply': 'Understood.'}
