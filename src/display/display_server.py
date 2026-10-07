@@ -19,6 +19,7 @@ import base64
 import binascii
 import hashlib
 import io
+from itertools import count
 import logging
 import random
 import time
@@ -133,6 +134,8 @@ overlays: List[Overlay] = []
 # Connected WebSocket clients (browsers)
 clients: Set[WebSocket] = set()
 logger = logging.getLogger('HAL')
+_server_id = uuid.uuid4().hex
+_render_revisions = count(1)
 
 
 # ---------------------------------------------
@@ -192,6 +195,9 @@ def compute_render() -> dict:
     - Otherwise, for each panel, pick the highest-priority unexpired overlay
       that targets that panel. If none, fall back to the slideshow 'state'.
     """
+    # Order snapshots across HTTP and WebSocket delivery. A delayed message must
+    # not roll the browser back to old text or resurrect an expired overlay.
+    version = {'server_id': _server_id, 'revision': next(_render_revisions)}
     # Filter out expired overlays (render-path safety; cleanup also happens in a background task)
     valid = [o for o in overlays if (o.expires_at is None or o.expires_at > now())]
 
@@ -199,7 +205,7 @@ def compute_render() -> dict:
     fs = [o for o in valid if o.fullscreen]
     if fs:
         topdog = sorted(fs, key=lambda o: o.priority, reverse=True)[0]
-        return {"layout": "fullscreen", "top": topdog.panel, "bottom": topdog.panel}
+        return {**version, "layout": "fullscreen", "top": topdog.panel, "bottom": topdog.panel}
 
     # Otherwise "split" layout: pick best per slot or use slideshow 'state'
     render_top = state["top"]
@@ -217,7 +223,7 @@ def compute_render() -> dict:
                 render_bot = winner.panel
 
     # Each panel owns its citations; an image never keeps the log pane open.
-    return {"layout": "split", "top": render_top, "bottom": render_bot}
+    return {**version, "layout": "split", "top": render_top, "bottom": render_bot}
 
 
 async def broadcast(msg: dict) -> None:
@@ -256,7 +262,7 @@ def index() -> HTMLResponse:
 
 
 @app.get("/api/state")
-def get_state() -> dict:
+async def get_state() -> dict:
     """
     Return the current computed render state (useful for initial load or debugging).
     """

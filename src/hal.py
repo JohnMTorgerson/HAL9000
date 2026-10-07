@@ -103,7 +103,7 @@ display_handler = DisplayPushHandler(
     slots=("bottom",),          # or ("top",) if you prefer
     priority=70,                # below maps/etc. but above slideshow
     key="logs",                 # stable key so we upsert + refresh TTL
-    ttl_secs=30,                # auto-hide ~30s after last update
+    ttl_secs=30,                # auto-hide ~30s after HAL finishes responding
     max_lines=80,
     max_chars=4000,
     min_push_interval=0.25,
@@ -291,8 +291,10 @@ def run():
                         logger.info('Follow-up ignored; the existing deadline is unchanged.')
                     continue
                 hal_reply = decision.reply
+                display_handler.begin_response()
                 logger.display(f"USER: {user_input}", extra={'speech_role': 'user'})
             else:
+                display_handler.begin_response()
                 logger.display(f"USER: {user_input}", extra={'speech_role': 'user'})
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(user_input)
@@ -474,6 +476,7 @@ def run():
         except KeyboardInterrupt:
             followups.close()
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
+            display_handler.close()
             display_mgr.stop()
             led.off()
             llm.close_memory()
@@ -481,11 +484,13 @@ def run():
 
         except Exception:
             followups.close()
+            display_handler.close()
             display_mgr.stop()
             led.off()
             llm.close_memory()
             raise
         finally:
+            display_handler.end_response()
             if live_stream is not None:
                 live_stream.close()
 

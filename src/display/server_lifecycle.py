@@ -98,7 +98,10 @@ class DisplayServerManager:
             self._log("warning", f"Could not import {self.app_import_path}: {e}")
             return
 
-        config = uvicorn.Config(app, host=host, port=port, log_level=self.log_level)
+        # HAL already owns logging. Uvicorn's default dictConfig closes existing
+        # handlers, including the transcript handler and its pending delivery.
+        config = uvicorn.Config(app, host=host, port=port, log_level=self.log_level,
+                                log_config=None)
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, name="DisplayServer", daemon=True)
         thread.start()

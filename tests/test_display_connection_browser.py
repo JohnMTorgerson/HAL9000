@@ -1,12 +1,13 @@
 """Exercise display recovery with an actual browser and HTTP display server."""
 from concurrent.futures import ThreadPoolExecutor
 import io
+from itertools import count
 import json
 import logging
 import os
 import socket
-import threading
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -19,8 +20,8 @@ pytestmark = pytest.mark.skipif(os.getenv('HAL_BROWSER_TESTS') != '1',
 def display_browser():
     from PIL import Image
     from playwright.sync_api import sync_playwright
-    import uvicorn
     from display import display_server as srv
+    from display.server_lifecycle import DisplayServerManager
     from display_client import DisplayClient
     from display_log_handler import DisplayPushHandler
 
@@ -30,23 +31,22 @@ def display_browser():
     servers = []
 
     def start():
+        # Simulate the new instance ID/counter a fresh HAL process creates.
+        srv._server_id = uuid.uuid4().hex
+        srv._render_revisions = count(1)
         srv.overlays.clear()
         srv.clients.clear()
         srv.image_loads.clear()
         srv.image_visibility.clear()
-        server = uvicorn.Server(uvicorn.Config(srv.app, host='127.0.0.1', port=port, log_level='error'))
-        thread = threading.Thread(target=server.run, daemon=True)
-        thread.start()
-        servers.append((server, thread))
-        deadline = time.monotonic() + 5
-        while not server.started and time.monotonic() < deadline:
-            time.sleep(.02)
-        assert server.started
+        server = DisplayServerManager(f'http://127.0.0.1:{port}', log_level='error', register_atexit=False)
+        server.start()
+        servers.append(server)
+        assert server._server.started
 
     def stop():
-        server, thread = servers[-1]
-        server.should_exit = True
-        thread.join(5)
+        server = servers[-1]
+        thread = server._thread
+        server.stop()
         assert not thread.is_alive()
 
     def restart():
@@ -81,7 +81,7 @@ def display_browser():
                     assert future.result() == 'loaded'
 
             try:
-                yield SimpleNamespace(page=page, display=display, srv=srv, say=say,
+                yield SimpleNamespace(page=page, display=display, srv=srv, say=say, handler=handler,
                                       present=present, restart=restart)
                 assert not errors
             finally:
@@ -193,3 +193,66 @@ def test_delayed_http_snapshot_cannot_overwrite_a_newer_socket_update(display_br
     response.value.finished()
     page.wait_for_timeout(100)
     assert 'New conversation' in page.locator('#bottom .text-content').inner_text()
+
+
+def test_burst_delivery_and_initial_long_transcript_scroll(display_browser):
+    fixture = display_browser
+    page = fixture.page
+    page.goto(fixture.display.base)
+    page.wait_for_selector('#bottom img')
+    fixture.handler.min_push_interval = .25
+    fixture.handler.begin_response()
+    fixture.say('\n'.join(f'USER: Earlier conversation line {n}.' for n in range(50)))
+    page.wait_for_selector('#bottom .text-content')
+    assert page.locator('#bottom .text-content').evaluate(
+        'e => e.scrollHeight > e.clientHeight && e.scrollTop + e.clientHeight >= e.scrollHeight - 1')
+    fixture.handler.handle(logging.LogRecord('HAL', 25, '', 0, 'HAL: Just a moment.', (), None))
+    page.wait_for_function(
+        "document.querySelector('#bottom .text-content').textContent.endsWith('HAL: Just a moment.')",
+        timeout=1500)
+    assert page.locator('#bottom .text-content').evaluate(
+        'e => e.scrollTop + e.clientHeight >= e.scrollHeight - 1')
+    fixture.handler.end_response()
+
+
+def test_transcript_expires_after_playback_not_during_it(display_browser, monkeypatch):
+    fixture = display_browser
+    clock = [fixture.srv.now()]
+    monkeypatch.setattr(fixture.srv, 'now', lambda: clock[0])
+    page = fixture.page
+    page.goto(fixture.display.base)
+    page.wait_for_selector('#bottom img')
+    fixture.handler.begin_response()
+    fixture.say('HAL: A long explanation.')
+    page.wait_for_selector('#bottom .text-content')
+    clock[0] += 40  # Synthesis plus playback exceeds the old 30-second timer.
+    fixture.srv.prune_expired()
+    state = fixture.display._s.get(fixture.display.base + '/api/state').json()
+    assert state['bottom']['type'] == 'text'
+    fixture.handler.end_response()
+    clock[0] += 29
+    assert fixture.display._s.get(fixture.display.base + '/api/state').json()['bottom']['type'] == 'text'
+    clock[0] += 2
+    page.wait_for_selector('#bottom img', timeout=3500)
+
+
+def test_delayed_socket_frame_cannot_restore_text_after_a_newer_http_snapshot(display_browser):
+    fixture = display_browser
+    page = fixture.page
+    page.add_init_script("""window.WebSocket = class {
+        static CONNECTING = 0; static OPEN = 1; static CLOSED = 3;
+        constructor() { this.readyState = 1; window.testSocket = this; }
+        close() { this.readyState = 3; }
+    };""")
+    page.goto(fixture.display.base)
+    page.wait_for_selector('#bottom img')
+    fixture.say('HAL: This response has finished.')
+    old = fixture.display._s.get(fixture.display.base + '/api/state').json()
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+    page.wait_for_selector('#bottom .text-content')
+    fixture.display.clear(key='logs')
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+    page.wait_for_selector('#bottom img')
+    # The delayed socket contains a pre-clear frame; HTTP already showed newer state.
+    page.evaluate("payload => testSocket.onmessage({data: JSON.stringify({type:'render', payload})})", old)
+    assert page.locator('#bottom .text-content').count() == 0

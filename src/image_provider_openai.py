@@ -1,5 +1,6 @@
 """OpenAI image search and vision, with one bounded no-results recovery attempt."""
 import base64
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import hashlib
@@ -48,8 +49,10 @@ Prefer authoritative original sources (a manufacturer's product/press pages for
 products), then reputable secondary sources. Avoid confusing rumors/concepts,
 accessories, or older versions with the requested subject. Return image AND text
 search results, with enough source evidence to establish the exact identity.
-Use at most three search-tool calls. After resolving the subject, use a targeted
-image search for that subject if initial results do not match. In
+Use at most three search-tool calls. Text results about photographs are not
+image results: obtain actual image-search results before returning status=ok.
+After resolving the subject, use a targeted image search for that subject if
+initial results do not include usable pictures. In
 preferred_image_urls, rank up to five candidate URLs copied EXACTLY from actual
 image search results. These are references only: the application rejects any URL
 not present in the structured tool results. Never invent a URL. Prefer a clear,
@@ -197,6 +200,8 @@ class OpenAIImageProvider:
             if item.get('type') == 'web_search_call' and item.get('status') == 'completed':
                 self.logger.info('Image search tool: attempt=%s; action=%s; results=%s',
                                  attempt, json.dumps(item.get('action')), len(item.get('results') or []))
+                self.logger.info('Image search result types: attempt=%s; %s', attempt,
+                                 dict(Counter(r.get('type', 'unknown') for r in item.get('results') or [])))
                 for result in item.get('results') or []:
                     if result.get('type') != 'image_result':
                         continue
@@ -227,9 +232,12 @@ class OpenAIImageProvider:
             return ImageResult('no_results', self._failure_reply(answer.get('reply'),
                                "I couldn't find a suitable image for that request.")), feedback
         if not candidates:
-            # Distinguish unavailable structured image results from an actual
-            # zero-result response. Never scrape URLs out of assistant prose.
-            return ImageResult('error', "The image service didn't return usable image links. Please check image-search support for the selected model."), feedback
+            # A completed text-only search is recoverable, even when the model
+            # incorrectly says "ok". Still never use URLs from assistant prose.
+            feedback['reason'] = ('No usable structured image results were returned. '
+                                  'Search specifically for images of the resolved subject; '
+                                  'webpages describing photographs are not enough.')
+            return ImageResult('no_results', "I found information about that, but couldn't retrieve a usable picture."), feedback
 
         def fetch(candidate):
             try:

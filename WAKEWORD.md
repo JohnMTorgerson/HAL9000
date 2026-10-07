@@ -290,6 +290,16 @@ the conversation, and candidates whose classification fails. These lines appear
 in the terminal and `log.log` even with `DEBUG_ON=False`; they do not appear on
 HAL's display unless accepted as a normal user request.
 
+The transcript pane stays visible while an accepted response is being prepared
+and spoken, including image searches and songs. Its 30-second inactivity timer
+starts when HAL finishes. Empty, ignored, and end-of-conversation follow-ups do
+not refresh it. Closely spaced display lines get a deferred push, normally
+within 250 ms, including the last line of a burst; they never depend on a later
+log message.
+Failed display pushes retry after five seconds while the text is still current.
+Delivery failures and recovery appear in the main log, without entering the
+transcript itself. Long transcripts scroll to their newest lines when opened.
+
 In an interactive terminal, user transcripts (including wake and follow-up
 transcripts) are cyan, and HAL's spoken replies are green. Saved logs and HAL's
 display remain plain text. Color is disabled for redirected output, `TERM=dumb`,
@@ -312,7 +322,11 @@ runs its reasoning updates after replies with decisions in a separate `memory.lo
 
 With `TRANSCRIPTION_BACKEND=api` and `TRANSCRIPTION_MODE=static`, HAL sends an
 English language hint by default. This also applies to an explicitly enabled
-static fallback from live mode. Configure it in `.env`, then restart HAL:
+static fallback from live mode. With `en`, a short transcription prompt also
+requests verbatim English without translation, and an empty result for no
+intelligible speech. This is a transcription hint, not a guaranteed language
+filter; it adds no extra API request. Startup logs record the effective hint
+and whether that prompt is enabled. Configure it in `.env`, then restart HAL:
 
 ```dotenv
 TRANSCRIPTION_LANGUAGE=en

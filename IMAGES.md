@@ -83,8 +83,11 @@ The ordinary successful path therefore uses three LLM requests total, including
 the initial HAL turn. If search or verification finds no suitable image, HAL can
 make one more targeted search using the failure explanation, followed by vision
 if it finds candidates. This recovery can add at most two LLM requests (five
-total). Refusals and service errors stop immediately. There is no separate final
-rephrasing or moderation call, and no automatic network/API-error retries.
+total). A search that reports success but returns only text results or unusable
+image links gets the same single recovery attempt, with explicit feedback to
+retrieve real image results. Refusals and service errors stop immediately.
+There is no separate final rephrasing or moderation call, and no automatic
+network/API-error retries.
 Search-tool calls have their own cost in addition to model usage. Search and
 vision requests each have a 45-second network timeout; the browser acknowledgment
 wait is eight seconds.
@@ -102,8 +105,9 @@ any identified model in the current lineup can satisfy a broad "new/latest"
 request; a specifically named model still requires a match to that model.
 
 `log.log` records routing repairs, search queries, the resolved subject and source
-evidence, candidate URLs/captions, verification IDs and rejection reasons, and any
-recovery attempt. HAL speaks the specific no-results explanation when available.
+evidence, structured result types/counts, candidate URLs/captions, verification
+IDs and rejection reasons, and any recovery attempt. HAL speaks the specific
+no-results explanation when available.
 An explicit picture request followed by an unsupported "Here it is" claim is
 repaired to an image command before speech. Ignored follow-ups and provider
 refusals never trigger this repair.
@@ -142,7 +146,9 @@ WebSocket. The browser also fetches the current display state every two seconds,
 so a missing or stalled WebSocket does not leave either pane on the slideshow.
 The initial HTTP fetch and socket connection start independently; HTTP requests
 time out after two seconds, and a socket stuck connecting is replaced after
-three seconds. Late snapshots cannot overwrite newer socket updates. The same
+three seconds. Server instance IDs and increasing snapshot revisions prevent
+either transport from overwriting newer state, including restoring expired text
+from a delayed socket frame. The same
 page recovers when HAL's display server restarts, without a manual page reload.
 Connection and disconnection timestamps are written to `log.log`. A zero
 WebSocket count can coexist with a working display through HTTP state refreshes.

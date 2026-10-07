@@ -130,10 +130,27 @@ def test_missing_raw_image_results_does_not_trust_model_written_urls(provider_fa
     parsed['image_url'] = 'https://invented.example/photo.jpg'
     body['output'][0]['content'][0]['text'] = json.dumps(parsed)
     download = Mock()
-    provider, calls = provider_factory([body], download)
-    assert provider.lookup('fixture').status == 'error'
-    assert len(calls) == 1
+    provider, calls = provider_factory([body, body], download)
+    assert provider.lookup('fixture').status == 'no_results'
+    assert len(calls) == 2
     download.assert_not_called()
+
+
+def test_text_only_search_recovers_with_real_images_and_vision(provider_factory, caplog):
+    body = response_body({'status': 'ok', 'subject': 'Convair F-106 Delta Dart',
+                          'evidence': 'A museum page describes the aircraft.', 'reply': '',
+                          'preferred_image_urls': []},
+                         results=[{'type': 'search_result', 'url': 'https://example.com/museum'}] * 30)
+    provider, calls = provider_factory([body, search_body(), vision_body()])
+    with caplog.at_level('INFO', logger='HAL'):
+        result = provider.lookup('a picture of an F-106')
+    assert result.status == 'ok' and len(calls) == 3
+    retry = json.loads(calls[1]['input'])['previous_attempt']
+    assert retry['subject'] == 'Convair F-106 Delta Dart'
+    assert 'No usable structured image results' in retry['reason']
+    assert "'search_result': 30" in caplog.text
+    assert 'Image lookup recovery' in caplog.text
+    assert calls[2]['input'][0]['content'][2]['type'] == 'input_image'
 
 
 def test_unrecognized_selected_id_never_reaches_display(provider_factory):

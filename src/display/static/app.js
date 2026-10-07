@@ -13,6 +13,8 @@
     let socketRenderCount = 0;
     let stateRequestPending = false;
     let prev = null; // previous render payload (deep-frozen snapshot)
+    let renderVersion = null;
+    const retiredServers = new Set();
 
     // ---- Utilities ----
     const deepClone = (o) => JSON.parse(JSON.stringify(o));
@@ -187,11 +189,30 @@
         }
 
         container.appendChild(content);
+        // Scroll only after attachment: detached nodes have no usable height.
+        // This matters when a long transcript replaces the slideshow.
+        if (nextPanel.type === 'text') {
+            const words = content.querySelector('.text-content');
+            words.scrollTop = words.scrollHeight;
+        }
         updateCitations(container, nextPanel);
     }
 
     // Main render entrypoint
     function render(payload) {
+        // Both transports can lag. Only accept a newer snapshot from this
+        // server, and never return to an old server instance after a restart.
+        if (payload.server_id && Number.isSafeInteger(payload.revision)) {
+            if (renderVersion) {
+                if (payload.server_id === renderVersion.server) {
+                    if (payload.revision <= renderVersion.revision) return;
+                } else {
+                    if (retiredServers.has(payload.server_id)) return;
+                    retiredServers.add(renderVersion.server);
+                }
+            }
+            renderVersion = {server: payload.server_id, revision: payload.revision};
+        }
         // Apply layout only if it changed
         if (!prev || !sameLayout(prev.layout, payload.layout)) {
             applyLayout(payload.layout || "split");
@@ -269,8 +290,10 @@
             const res = await fetch("/api/state", { cache: "no-store", signal: controller.signal });
             if (!res.ok) throw new Error('Display state unavailable');
             const json = await res.json();
-            // A slower HTTP snapshot must not overwrite a newer socket update.
-            if (before === socketRenderCount && json) render(json);
+            // Versioned snapshots are ordered by render(), in either direction.
+            // Keep the arrival-count guard for older display servers only.
+            if (json && ((json.server_id && Number.isSafeInteger(json.revision)) ||
+                         before === socketRenderCount)) render(json);
         } catch (_) {
             // HAL may be stopped; keep the last frame and retry next time.
         } finally {

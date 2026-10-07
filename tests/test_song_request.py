@@ -66,6 +66,9 @@ def test_intro_pause_song_and_history_finish_before_microphone_reopens(followup)
     ns['voice'].synthesize_wav.side_effect = speak
 
     def play(filename, **kwargs):
+        # The transcript remains held until all audio, including the song, ends.
+        assert ns['display_handler'].begin_response.call_count == ns['voice_input'].read_command.call_count
+        assert ns['display_handler'].end_response.call_count == ns['voice_input'].read_command.call_count - 1
         events.append(('play', kwargs['label'], clock.now))
         if kwargs['label'].startswith('song'):
             assert filename == str(DAISY_PATH)
@@ -93,6 +96,7 @@ def test_intro_pause_song_and_history_finish_before_microphone_reopens(followup)
             on_trigger('followup')
         else:
             assert events[-1][0] == 'history'
+            assert ns['display_handler'].end_response.call_count == len(reads) - 1
             assert kwargs['followup_deadline'] == clock.now + 30
             ns['DisplayServerManager'].return_value.stop.assert_not_called()
             raise KeyboardInterrupt

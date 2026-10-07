@@ -13,6 +13,8 @@ load_dotenv()
 
 class WhisperSTT(SpeechToText):
     API_MODEL = 'gpt-4o-mini-transcribe'
+    ENGLISH_PROMPT = ('Transcribe the English speech verbatim. Do not translate it into another language. '
+                      'If there is no intelligible speech, return an empty transcript.')
 
     def __init__(self, model_name=None, logger=None):
         self.logger = logger if logger is not None else logging.getLogger('HAL')
@@ -46,6 +48,8 @@ class WhisperSTT(SpeechToText):
                 # Validate the optional dependency at startup, without connecting.
                 LiveTranscription(self.api_key, self.live_settings, self.logger)
             self.client = openai.OpenAI(api_key=self.api_key, max_retries=0)
+            self.logger.info('Static API transcription language hint: %s; English transcription prompt: %s.',
+                             self.language or 'automatic', 'enabled' if self.language == 'en' else 'disabled')
         else:
             raise ValueError(f'Unknown TRANSCRIPTION_BACKEND: {self.backend}')
 
@@ -93,6 +97,7 @@ class WhisperSTT(SpeechToText):
                 try:
                     transcript = self.client.audio.transcriptions.create(
                         model=self.API_MODEL, file=('command.wav', wav, 'audio/wav'),
+                        **({'prompt': self.ENGLISH_PROMPT} if self.language == 'en' else {}),
                         **({'language': self.language} if self.language else {}))
                 except openai.APIError as exc:
                     raise _service_failure(exc) from None

@@ -280,6 +280,7 @@ class ModeTests(unittest.TestCase):
         self.assertIn(b'gpt-4o-mini-transcribe', requests[0].content)
         self.assertIn(b'RIFF', requests[0].content)
         self.assertIn(b'name="language"\r\n\r\nen\r\n', requests[0].content)
+        self.assertIn(WhisperSTT.ENGLISH_PROMPT.encode(), requests[0].content)
 
     def test_static_language_can_be_changed_or_omitted(self):
         for value in (' FR ', '', '   '):
@@ -287,6 +288,7 @@ class ModeTests(unittest.TestCase):
                 stt, requests = self.make_stt({'TRANSCRIPTION_LANGUAGE': value})
                 stt.transcribe(np.ones(1600, dtype=np.float32) * .1)
                 body = requests[0].content
+                self.assertNotIn(b'name="prompt"', body)
                 if value.strip():
                     self.assertIn(b'name="language"\r\n\r\nfr\r\n', body)
                 else:

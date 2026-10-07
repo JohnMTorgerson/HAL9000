@@ -366,6 +366,7 @@ class MainLoopTests(unittest.TestCase):
                          ['debug query', 'reply', 'acknowledgment', 'reply'])
         self.assertEqual(ns['llm'].get_response.call_count, 2)  # initial and external follow-through
         self.assertEqual(ns['llm'].get_followup_response.call_count, 3)
+        self.assertEqual(ns['display_handler'].begin_response.call_count, 2)
         # Long-term memory sees completed speech pairs only, after final
         # playback. Neither ignored/end speech nor API payloads are evidence.
         self.assertEqual([call.args for call in ns['llm'].finish_turn.call_args_list],

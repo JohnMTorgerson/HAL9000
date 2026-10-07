@@ -250,7 +250,7 @@ class SimulatedClock:
 class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
-            'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager',
+            'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager', 'display_handler',
             'play_audio', 'handle_api_call', 'time', 'images')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
