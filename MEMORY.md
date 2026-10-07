@@ -140,6 +140,11 @@ and local validation. For a longer message, the updater must choose a short,
 exact, contiguous excerpt that preserves relevant qualifications; fuller discussion
 details belong in the summary. HAL does not truncate or rewrite evidence to make
 a rejected patch pass, and this adds no extra API calls.
+Each operation also has a schema-enforced total of 1–3 evidence sources, counting
+older context and new quotes together. Topic extensions merge retained evidence;
+the updater should select useful sources rather than recopy every earlier turn.
+The schema also bounds operations/tag updates and search tags to their existing
+local limits. Source attribution and exact-quote checks still run locally.
 Older quotes are marked `context_only: true` and do not increase fresh evidence
 counts or evidence dates. Old context alone cannot create or reinforce a memory,
 and forget requests still require new user speech. Tag-only enrichment uses the existing record as its source and

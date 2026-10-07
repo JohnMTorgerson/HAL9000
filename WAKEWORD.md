@@ -306,6 +306,12 @@ warnings and errors. Conversation stays cyan, warnings are yellow, and errors
 warning does not recolor earlier conversation. INFO and DEBUG records stay off
 the display; file logs remain plain text.
 
+The embedded display server keeps Uvicorn's startup/shutdown, HTTP request,
+warning and error messages in the terminal. Its terminal handlers are installed
+without reconfiguring or closing HAL's transcript/file handlers. Successful
+GET polls of `/api/state` and `/api/images/status/…` stay silent; failed polls and
+other requests remain visible.
+
 In an interactive terminal, user transcripts (including wake and follow-up
 transcripts) are cyan, and HAL's spoken replies are green. Saved logs and HAL's
 display remain plain text. Color is disabled for redirected output, `TERM=dumb`,

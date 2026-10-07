@@ -121,3 +121,27 @@ def test_wrong_role_and_unavailable_turn_have_distinct_diagnostics():
             MemoryStore._evidence([evidence], {1: turn})
         assert err.value.details['check'] == expected
         assert err.value.details['source'] == evidence
+
+
+def test_source_limit_counts_old_context_and_both_new_speakers_together():
+    turns = [dict(id=i, at='2026-10-07T12:00:00+00:00',
+                  user_speech=f'Question {i}.', assistant_reply=f'Answer {i}.')
+             for i in (60, 61, 62)]
+    # Match the reported shape: the original request, both sides of its retry,
+    # and both sides of the pending follow-up are five sources, not three turns.
+    evidence = [source(turns[0]), source(turns[1]), source(turns[1], 'assistant'),
+                source(turns[2]), source(turns[2], 'assistant')]
+    with pytest.raises(EvidenceValidationError) as err:
+        MemoryStore._evidence(evidence, {62: turns[2]},
+                              roles=('user', 'assistant'), earlier=turns[:2])
+    assert err.value.details['check'] == 'source_count'
+    assert err.value.details['source_count'] == 5
+    assert err.value.details['max_source_count'] == 3
+    assert 'received 5' in str(err.value)
+    assert err.value.details['sources'] == evidence
+    # A model-selected set of three keeps the original referent and new exchange.
+    selected = [evidence[0], evidence[3], evidence[4]]
+    accepted = MemoryStore._evidence(selected, {62: turns[2]},
+                                     roles=('user', 'assistant'), earlier=turns[:2])
+    assert [s['quote'] for s in accepted] == [s['quote'] for s in selected]
+    assert [s.get('context_only', False) for s in accepted] == [True, False, False]

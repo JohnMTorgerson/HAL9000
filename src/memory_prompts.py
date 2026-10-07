@@ -157,7 +157,10 @@ USER quotes from a topic when adding an inferred personal interest. Per-section
 speaker requirements still apply. Include the original substantive statement when a new 'it', 'that' or
 'yes' depends on it; do not leave a vague continuation as the sole source. When
 updating a cumulative discussion, retain still-valid original source quotes for
-claims carried forward, and discard quotes invalidated by a correction. The app
+necessary context, within the SAME three-source total including new evidence.
+Choose the most useful sources; do not reproduce every earlier question, retry,
+and reply. Topic extensions already merge existing evidence in the application;
+preserve the broader history in the summary. Discard quotes invalidated by a correction. The app
 marks older quotes context_only and excludes them from fresh evidence counts.
 Old material alone and unrelated new chatter cannot justify relearning a fact.
 Multiple roles in the same turn are allowed. Forget evidence must be NEW user speech.
@@ -193,7 +196,8 @@ def _object(properties):
             'required': list(properties), 'additionalProperties': False}
 
 
-_TAGS = {'type': 'array', 'items': {'type': 'string'}}
+_TAGS = {'type': 'array', 'maxItems': 24,
+         'items': {'type': 'string', 'pattern': r'^[\s\S]{1,60}$'}}
 _SOURCE = _object({'turn_id': {'type': 'integer'},
                    'role': {'type': 'string', 'enum': ['user', 'assistant']},
                    'quote': {
@@ -212,12 +216,13 @@ MEMORY_FORMAT = {
         'schema': _object({
             'forget': {'type': 'boolean'},
             'forget_ids': {'type': 'array', 'items': {'type': 'string'}},
-            'forget_evidence': {'type': 'array', 'items': _SOURCE},
-            'tag_updates': {'type': 'array', 'items': _object({
+            # Empty when forget=false; the store requires 1–3 when true.
+            'forget_evidence': {'type': 'array', 'maxItems': 3, 'items': _SOURCE},
+            'tag_updates': {'type': 'array', 'maxItems': 20, 'items': _object({
                 'section': {'type': 'string', 'enum': ['personal', 'hal', 'topics']},
                 'id': {'type': 'string'}, 'tags': _TAGS,
             })},
-            'operations': {'type': 'array', 'items': _object({
+            'operations': {'type': 'array', 'maxItems': 20, 'items': _object({
                 'action': {'type': 'string', 'enum': ['add', 'update', 'extend', 'reinforce', 'delete']},
                 'section': {'type': 'string', 'enum': ['personal', 'hal', 'topics']},
                 'id': {'type': 'string'}, 'text': {'type': 'string'},
@@ -225,7 +230,7 @@ MEMORY_FORMAT = {
                 'retention': {'type': 'string', 'enum': ['durable']},
                 'expires_on': {'type': 'null'}, 'tags': _TAGS,
                 'reason': {'type': 'string'},
-                'evidence': {'type': 'array', 'items': _SOURCE},
+                'evidence': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': _SOURCE},
             })},
         }),
     },

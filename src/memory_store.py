@@ -296,14 +296,16 @@ class MemoryStore:
 
     @staticmethod
     def _evidence(sources, turns, *, roles=('user',), earlier=(), retained=(), operation=None):
-        details = {'operation': operation, 'sources': sources}
+        count = len(sources) if isinstance(sources, list) else None
+        details = {'operation': operation, 'sources': sources,
+                   'source_count': count, 'min_source_count': 1, 'max_source_count': 3}
 
         def require(condition, check, message):
             if not condition:
                 raise EvidenceValidationError(message, {'check': check, **details})
 
         require(isinstance(sources, list) and 1 <= len(sources) <= 3,
-                'source_count', 'Each change needs 1–3 sources.')
+                'source_count', f'Each change needs 1–3 sources; received {count if count is not None else "a non-list"}.')
         context = {turn['id']: turn for turn in earlier}
         result, seen = [], set()
         for index, source in enumerate(sources):

@@ -247,11 +247,18 @@ class APITests(unittest.TestCase):
         # a prompt-only limit previously allowed whole, overlong replies through.
         for evidence in (schema['operations']['items']['properties']['evidence'],
                          schema['forget_evidence']):
+            self.assertEqual(evidence['maxItems'], 3)
             quote = evidence['items']['properties']['quote']
             for allowed in ('A', 'A' * 300, 'é' * 300, 'A\n' * 150):
                 self.assertIsNotNone(re.search(quote['pattern'], allowed))
             for rejected in ('', 'A' * 301, 'A' * 379):
                 self.assertIsNone(re.search(quote['pattern'], rejected))
+        self.assertEqual(schema['operations']['items']['properties']['evidence']['minItems'], 1)
+        self.assertEqual(schema['forget_evidence'].get('minItems', 0), 0)
+        self.assertEqual(schema['operations']['maxItems'], 20)
+        self.assertEqual(schema['tag_updates']['maxItems'], 20)
+        for item in (schema['operations']['items'], schema['tag_updates']['items']):
+            self.assertEqual(item['properties']['tags']['maxItems'], 24)
         self.assertNotIn('tools', body)
         self.assertNotIn('temperature', body)
         self.assertNotIn('pod bay', body['messages'][0]['content'])

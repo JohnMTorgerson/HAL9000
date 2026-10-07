@@ -10,6 +10,8 @@ background thread via uvicorn. Safe to import from anywhere.
 
 from __future__ import annotations
 import atexit
+import logging
+import sys
 import threading
 import time
 from typing import Optional, Tuple
@@ -41,10 +43,40 @@ class DisplayServerManager:
         self.logger = logger
         self._server: Optional["uvicorn.Server"] = None
         self._thread: Optional[threading.Thread] = None
+        self._terminal_handlers = []
         if register_atexit:
             atexit.register(self.stop)
 
     # ---------------------------- helpers ---------------------------- #
+    def _configure_terminal_logging(self) -> None:
+        """Restore Uvicorn's console output without global logging.dictConfig."""
+        from uvicorn.logging import AccessFormatter, DefaultFormatter
+
+        formats = (
+            ('uvicorn', sys.stderr, DefaultFormatter('%(levelprefix)s %(message)s')),
+            ('uvicorn.access', sys.stdout, AccessFormatter(
+                '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s')),
+        )
+        for name, stream, formatter in formats:
+            target = logging.getLogger(name)
+            if target.handlers:
+                continue  # Respect an existing server logging configuration.
+            handler = logging.StreamHandler(stream)
+            handler.setFormatter(formatter)
+            self._terminal_handlers.append((target, handler, target.level, target.propagate))
+            target.addHandler(handler)
+            if name == 'uvicorn':
+                target.setLevel(logging.INFO)
+            target.propagate = False
+
+    def _restore_terminal_logging(self) -> None:
+        for target, handler, level, propagate in self._terminal_handlers:
+            target.removeHandler(handler)
+            handler.close()
+            target.setLevel(level)
+            target.propagate = propagate
+        self._terminal_handlers.clear()
+
     def _log(self, level: str, msg: str) -> None:
         if self.logger is not None:
             getattr(self.logger, level, self.logger.info)(msg)
@@ -100,8 +132,11 @@ class DisplayServerManager:
 
         # HAL already owns logging. Uvicorn's default dictConfig closes existing
         # handlers, including the transcript handler and its pending delivery.
+        # Install only the missing Uvicorn console handlers; keep HAL's handlers
+        # and the display app's successful-polling filter untouched.
         config = uvicorn.Config(app, host=host, port=port, log_level=self.log_level,
                                 log_config=None)
+        self._configure_terminal_logging()
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, name="DisplayServer", daemon=True)
         thread.start()
@@ -129,3 +164,4 @@ class DisplayServerManager:
         finally:
             self._server = None
             self._thread = None
+            self._restore_terminal_logging()
