@@ -87,7 +87,7 @@ body {
 
     color: #0ff; /* HAL-ish cyan */
     background-color: #044; /* deeper teal for transcript contrast */
-    font-size: 56px;
+    font-size: 64px;
     line-height: 1.3;
     white-space: pre-wrap;
     /* honor newlines */
