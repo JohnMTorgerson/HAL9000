@@ -1,5 +1,6 @@
 """Optional persistent memory; one background worker, no foreground API wait."""
 from dataclasses import dataclass
+from collections import Counter
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -70,6 +71,30 @@ def memory_logger(directory):
         handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s :: %(message)s'))
         logger.addHandler(handler)
     return logger
+
+
+def _change_summary(batch, changes):
+    """Describe a successfully applied patch without copying private memory text."""
+    labels = {'personal': 'User memory', 'hal': 'HAL memory', 'topics': 'Topic'}
+    verbs = {'add': 'added', 'update': 'updated', 'extend': 'extended',
+             'reinforce': 'reinforced', 'delete': 'removed', 'tag': 'tags updated'}
+    counts = Counter()
+
+    def add(section, action):
+        verb = 'created' if action == 'add' and section != 'topics' else verbs[action]
+        counts[f'{labels[section]} {verb}'] += 1
+
+    for operation in changes['operations']:
+        add(operation['section'], operation['action'])
+    for entry in changes['tag_updates']:
+        add(entry['section'], 'tag')
+    forgotten = set(changes['forget_ids'])
+    for section, entries in batch['catalogue'].items():
+        for entry in entries:
+            if entry['id'] in forgotten:
+                add(section, 'delete')
+    return '; '.join(label if count == 1 else f'{label} ({count})'
+                     for label, count in counts.items())
 
 
 class MemoryUpdater:
@@ -230,7 +255,12 @@ class ConversationMemory:
                         break
                     elapsed = time.perf_counter() - started
                     self.decisions.info('Memory update finished: %.3fs; %s changes.', elapsed, count)
-                    self.logger.info('Background memory: %s changes in %.2fs; details in memory.log.', count, elapsed)
+                    if count:
+                        self.logger.info('Background memory: %s. %s changes in %.2fs; details in memory.log.',
+                                         _change_summary(batch, changes), count, elapsed,
+                                         extra={'memory_change': True})
+                    else:
+                        self.logger.info('Background memory: no changes in %.2fs; details in memory.log.', elapsed)
         finally:
             self.updater.close()
 

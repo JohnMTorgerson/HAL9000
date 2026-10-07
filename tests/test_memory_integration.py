@@ -48,15 +48,22 @@ class SelectiveMemoryIntegrationTests(unittest.TestCase):
 
     def test_worker_processes_tag_only_startup_batch(self):
         store, updater = Mock(), Mock()
-        batch = {'cursor': 3, 'new_turns': [], 'tagging_entries': [{'id': 'p1'}]}
+        batch = {'cursor': 3, 'new_turns': [], 'tagging_entries': [{'id': 'p1'}],
+                 'catalogue': {'personal': [{'id': 'p1'}], 'hal': [], 'topics': []}}
+        updater.update.return_value = {'forget': False, 'forget_ids': [], 'forget_evidence': [],
+                                       'operations': [], 'tag_updates': [
+                                           {'section': 'personal', 'id': 'p1', 'tags': ['football']}]}
         store.next_batch.side_effect = [batch, None]
         completed = threading.Event()
-        store.apply.side_effect = lambda *_: (completed.set() or 1)
-        memory = ConversationMemory(store, updater, MemorySettings(soft_tokens=1200), Mock(), Mock())
+        store.apply.return_value = 1
+        log = Mock()
+        log.info.side_effect = lambda *a, **kw: completed.set() if kw.get('extra', {}).get('memory_change') else None
+        memory = ConversationMemory(store, updater, MemorySettings(soft_tokens=1200), log, Mock())
         try:
             self.assertTrue(completed.wait(2), 'startup tagging was not processed')
             updater.update.assert_called_once_with(batch)
             store.apply.assert_called_once_with(batch, updater.update.return_value)
+            self.assertEqual(log.info.call_args.args[1], 'User memory tags updated')
             self.assertTrue(all(call.kwargs == {'token_budget': 1200}
                                 for call in store.next_batch.call_args_list))
         finally:

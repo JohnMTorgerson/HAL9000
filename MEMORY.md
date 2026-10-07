@@ -271,14 +271,20 @@ and does not get pushed to HAL's display. It records:
   omitted because the context budget was full. Foreground and updater searches
   are identified separately. Explicit memory-overview selections are identified
   as browsing rather than reported as keyword matches.
-- Add/update/reinforce/delete decisions with before/after entries, supporting
+- Add/update/extend/reinforce/delete decisions with before/after entries, supporting
   quotes, and a short explanation. No-change batches are recorded too.
-- Legacy tagging batches, topic expiry, forget requests, rejected patches,
+- Legacy tagging batches, retention migrations, forget requests, rejected patches,
   failures and API token usage.
 
 These are concise explanations of decisions, not the model's private reasoning.
 The main HAL log/terminal gets a brief retrieval-size, completion, or failure
-message; full search details stay in `memory.log`. The separate
+message. Successful changes summarize each action and section, for example
+`Background memory: Topic added; User memory created.` Repeated actions include
+a count, and extensions, reinforcement, tag changes and removals are identified.
+Actual change summaries are bright magenta in an interactive terminal, respecting
+`NO_COLOR`, `TERM=dumb`, and redirected output. No-change messages retain normal
+color. Files stay plain text, and these INFO messages are not pushed to the display.
+Full memory text, evidence and search details stay in `memory.log`. The separate
 file rotates at approximately 2 MB, keeping three previous files (`memory.log.1`
 through `.3`). Inspect it with `tail -f /your/LOG_PATH/memory.log`, substituting
 your existing log directory.
