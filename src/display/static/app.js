@@ -64,8 +64,22 @@
             words.className = 'text-content';
             el.appendChild(words);
         }
-        if (words.textContent !== (panel.text || '')) {
-            words.textContent = panel.text || '';
+        const lines = panel.text_lines?.length ? panel.text_lines : null;
+        const contentKey = JSON.stringify(lines || panel.text || '');
+        if (words.dataset.content !== contentKey) {
+            words.dataset.content = contentKey;
+            if (lines) {
+                words.replaceChildren();
+                for (const line of lines) {
+                    const span = document.createElement('span');
+                    const level = ['warning', 'error'].includes(line.level) ? line.level : 'conversation';
+                    span.className = 'transcript-' + level;
+                    span.textContent = line.text; // Log contents are text, never HTML.
+                    words.appendChild(span);
+                }
+            } else {
+                words.textContent = panel.text || '';
+            }
             words.scrollTop = words.scrollHeight;
         }
     }

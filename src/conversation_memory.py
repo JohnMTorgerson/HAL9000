@@ -250,6 +250,13 @@ class ConversationMemory:
                         break
                     except ValueError as exc:
                         self.decisions.error('Rejected memory patch: %s. Existing memories retained.', exc)
+                        self.decisions.error('Rejected memory patch details: %s', json.dumps({
+                            'previous_cursor': batch['cursor'],
+                            'new_turn_ids': [t['id'] for t in batch['new_turns']],
+                            'reason': str(exc),
+                            'validation': getattr(exc, 'details', None),
+                            'proposed_changes': changes,
+                        }, ensure_ascii=False))
                         self.logger.warning('Background memory patch rejected; see memory.log. Pending exchanges retained.')
                         self.wake.clear()
                         break

@@ -275,6 +275,12 @@ and does not get pushed to HAL's display. It records:
   quotes, and a short explanation. No-change batches are recorded too.
 - Legacy tagging batches, retention migrations, forget requests, rejected patches,
   failures and API token usage.
+- Rejected proposals with their pending turn IDs, unchanged cursor, and validation
+  reason. Evidence failures identify the operation and source (numbered from 1),
+  cited turn/speaker, proposed quote, character count/limit, and available source
+  text. Empty/invalid quotes, overlong quotes, literal mismatches, incorrect roles,
+  unavailable sources and missing new evidence have distinct check names. These
+  diagnostics describe the first failed check; the entire patch remains rejected.
 
 These are concise explanations of decisions, not the model's private reasoning.
 The main HAL log/terminal gets a brief retrieval-size, completion, or failure
@@ -288,6 +294,10 @@ Full memory text, evidence and search details stay in `memory.log`. The separate
 file rotates at approximately 2 MB, keeping three previous files (`memory.log.1`
 through `.3`). Inspect it with `tail -f /your/LOG_PATH/memory.log`, substituting
 your existing log directory.
+
+Brief memory warnings/errors also appear in the transcript pane, yellow/red
+respectively. The detailed rejected proposal and source comparisons stay in
+`memory.log`; no validation rule or automatic retry behavior is changed.
 
 ## Validation
 

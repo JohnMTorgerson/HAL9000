@@ -72,10 +72,16 @@ class Citation(BaseModel):
         return value
 
 
+class TranscriptLine(BaseModel):
+    text: str
+    level: Literal['conversation', 'warning', 'error'] = 'conversation'
+
+
 class Panel(BaseModel):
     type: ContentType                 # "image", "text", or "url"
     src: Optional[str] = None         # image path or URL, or iframe URL when type="url"
     text: Optional[str] = None        # used when type="text"
+    text_lines: List[TranscriptLine] = Field(default_factory=list)
     fit: Literal["cover", "contain"] = "cover"  # image object-fit behavior
     bg: str = "#000"                  # background color (e.g., "#000" black)
     citations: List[Citation] = Field(default_factory=list, max_length=6)
@@ -278,6 +284,7 @@ class PushRequest(BaseModel):
     type: ContentType
     src: Optional[str] = None
     text: Optional[str] = None
+    text_lines: List[TranscriptLine] = Field(default_factory=list)
     fit: Literal["cover", "contain"] = "cover"
     bg: str = "#000"
     citations: List[Citation] = Field(default_factory=list, max_length=6)
@@ -309,7 +316,7 @@ async def push_overlay(req: PushRequest) -> dict:
             if o.key == req.key:
                 # Update properties in place
                 o.panel = Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg,
-                                citations=req.citations, load_token=req.load_token)
+                                citations=req.citations, load_token=req.load_token, text_lines=req.text_lines)
                 o.priority = req.priority
                 o.fullscreen = req.fullscreen
                 o.slots = {"top", "bottom"} if req.fullscreen else set(req.slots or ["top"])
@@ -324,7 +331,7 @@ async def push_overlay(req: PushRequest) -> dict:
     overlay = Overlay(
         slots=slots,
         panel=Panel(type=req.type, src=req.src, text=req.text, fit=req.fit, bg=req.bg,
-                    citations=req.citations, load_token=req.load_token),
+                    citations=req.citations, load_token=req.load_token, text_lines=req.text_lines),
         priority=req.priority,
         expires_at=(now() + req.ttl_secs) if req.ttl_secs else None,
         fullscreen=req.fullscreen,

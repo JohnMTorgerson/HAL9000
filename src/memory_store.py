@@ -16,6 +16,13 @@ SECTIONS = ('personal', 'hal', 'topics')
 TAG_BATCH_SIZE = 20
 
 
+class EvidenceValidationError(ValueError):
+    """An unchanged rejection rule plus details for the separate memory log."""
+    def __init__(self, message, details):
+        super().__init__(message)
+        self.details = details
+
+
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -288,38 +295,61 @@ class MemoryStore:
             })
 
     @staticmethod
-    def _evidence(sources, turns, *, roles=('user',), earlier=(), retained=()):
-        _require(isinstance(sources, list) and 1 <= len(sources) <= 3, 'Each change needs 1–3 sources.')
+    def _evidence(sources, turns, *, roles=('user',), earlier=(), retained=(), operation=None):
+        details = {'operation': operation, 'sources': sources}
+
+        def require(condition, check, message):
+            if not condition:
+                raise EvidenceValidationError(message, {'check': check, **details})
+
+        require(isinstance(sources, list) and 1 <= len(sources) <= 3,
+                'source_count', 'Each change needs 1–3 sources.')
         context = {turn['id']: turn for turn in earlier}
         result, seen = [], set()
-        for source in sources:
-            _require(isinstance(source, dict) and set(source) == {'turn_id', 'role', 'quote'},
-                     'Invalid source fields.')
+        for index, source in enumerate(sources):
+            details = {'operation': operation, 'source_index': index + 1,
+                       'source': source, 'allowed_roles': list(roles)}
+            require(isinstance(source, dict) and set(source) == {'turn_id', 'role', 'quote'},
+                    'source_fields', 'Invalid source fields.')
             ident, quote, role = source['turn_id'], source['quote'], source['role']
-            _require(role in roles, 'Evidence role is not allowed for this memory change.')
-            _require(type(ident) is int and (ident, role) not in seen,
-                     'Evidence must cite distinct speaker sources.')
+            details.update(quote_length=len(quote) if isinstance(quote, str) else None,
+                           max_quote_length=300)
+            require(role in roles, 'source_role', 'Evidence role is not allowed for this memory change.')
+            require(type(ident) is int, 'turn_id_type', 'Evidence turn ID must be an integer.')
+            require((ident, role) not in seen, 'duplicate_source', 'Evidence must cite distinct speaker sources.')
             turn = turns.get(ident) or context.get(ident)
             original = None
             if turn is not None:
                 speech = (turn['user_speech'] if role == 'user' else
                           turn['assistant_reply'].split('\n[Application action result:', 1)[0])
                 at = turn['at']
+                details.update(source_kind='new_turn' if ident in turns else 'earlier_context',
+                               available_source_texts=[speech])
             else:
-                original = next((s for s in retained if s['turn_id'] == ident and s['role'] == role
-                                 and isinstance(quote, str) and quote in s['quote']), None)
-                _require(original is not None,
-                         'Evidence must cite NEW accepted turns or supplied supporting context.')
+                candidates = [s for s in retained if s['turn_id'] == ident and s['role'] == role]
+                details.update(source_kind='retained_memory',
+                               available_source_texts=[s['quote'] for s in candidates])
+                require(bool(candidates), 'source_not_supplied',
+                        'Evidence must cite NEW accepted turns or supplied supporting context.')
+            require(isinstance(quote, str), 'quote_type', 'Evidence quote must be text.')
+            require(bool(quote.strip()), 'quote_empty', 'Evidence quote must not be empty or whitespace.')
+            require(len(quote) <= 300, 'quote_length',
+                    f'Evidence quote has {len(quote)} characters; maximum is 300.')
+            if turn is None:
+                original = next((s for s in candidates if quote in s['quote']), None)
+                require(original is not None, 'quote_mismatch',
+                        'Evidence quote must be exact user speech or HAL speech from its declared role.')
                 speech, at = original['quote'], original['at']
-            _require(_text(quote, 300) and quote in speech,
-                     'Evidence quote must be exact user speech or HAL speech from its declared role.')
+            require(quote in speech, 'quote_mismatch',
+                    'Evidence quote must be exact user speech or HAL speech from its declared role.')
             seen.add((ident, role))
             item = {'turn_id': ident, 'at': at, 'role': role, 'quote': quote}
             if ident not in turns:
                 item['context_only'] = True
             result.append(item)
-        _require(any(s['turn_id'] in turns for s in result),
-                 'Each change requires evidence from a NEW accepted turn; context cannot reinforce itself.')
+        details = {'operation': operation, 'sources': sources, 'new_turn_ids': list(turns)}
+        require(any(s['turn_id'] in turns for s in result), 'missing_new_evidence',
+                'Each change requires evidence from a NEW accepted turn; context cannot reinforce itself.')
         return result
 
     def apply(self, batch, changes):
@@ -338,7 +368,8 @@ class MemoryStore:
                      and len(set(forget_ids)) == len(forget_ids), 'Invalid forget IDs.')
             forgotten_sources = []
             if forget:
-                forgotten_sources = self._evidence(changes['forget_evidence'], turns)
+                forgotten_sources = self._evidence(changes['forget_evidence'], turns,
+                                                  operation={'action': 'forget', 'ids': forget_ids})
                 _require(not changes['operations'] and not changes['tag_updates'],
                          'Forget batches only use forget_ids; no other mutations.')
             else:
@@ -362,7 +393,7 @@ class MemoryStore:
                         events.append({'action': 'delete', 'section': section, 'before': item,
                                        'after': None, 'reason': 'Explicit request to forget.',
                                        'evidence': forgotten_sources})
-            for op in changes['operations']:
+            for index, op in enumerate(changes['operations']):
                 _require(isinstance(op, dict) and set(op) == {
                     'action', 'section', 'id', 'text', 'basis', 'retention', 'tags',
                     'expires_on', 'reason', 'evidence'}, 'Invalid operation fields.')
@@ -378,7 +409,8 @@ class MemoryStore:
                 roles = (('user',) if section == 'personal' else ('assistant',)
                          if section == 'hal' and action != 'delete' else ('user', 'assistant'))
                 sources = self._evidence(op['evidence'], turns, roles=roles,
-                    earlier=batch['earlier_context'], retained=supplied_sources)
+                    earlier=batch['earlier_context'], retained=supplied_sources,
+                    operation={'index': index + 1, 'action': action, 'section': section, 'id': ident})
                 fresh = [s for s in sources if not s.get('context_only', False)]
                 _retention(op, section)
                 tags = _tags(op['tags'], allow_empty=action == 'delete')

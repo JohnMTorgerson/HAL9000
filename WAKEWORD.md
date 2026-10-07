@@ -300,6 +300,12 @@ Failed display pushes retry after five seconds while the text is still current.
 Delivery failures and recovery appear in the main log, without entering the
 transcript itself. Long transcripts scroll to their newest lines when opened.
 
+The pane includes explicitly designated conversation/display messages plus
+warnings and errors. Conversation stays cyan, warnings are yellow, and errors
+(including critical errors) are red. Severity travels with each message, so a
+warning does not recolor earlier conversation. INFO and DEBUG records stay off
+the display; file logs remain plain text.
+
 In an interactive terminal, user transcripts (including wake and follow-up
 transcripts) are cyan, and HAL's spoken replies are green. Saved logs and HAL's
 display remain plain text. Color is disabled for redirected output, `TERM=dumb`,

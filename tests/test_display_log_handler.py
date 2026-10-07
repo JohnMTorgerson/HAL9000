@@ -103,3 +103,34 @@ def test_delivery_diagnostics_do_not_become_transcript_lines(delivery):
     record.skip_display = True
     d.handler.handle(record)
     d.client.text.assert_not_called()
+
+
+def test_message_levels_survive_trimming_and_remain_plain_text(delivery):
+    d = delivery
+    d.handler.min_push_interval = 0
+    messages = [(25, 'HAL: I found an error in that story.'),
+                (30, 'Warning line one.\nWarning line two.'),
+                (40, 'Error line.'), (50, 'Critical line.')]
+    for level, text in messages:
+        d.handler.handle(logging.LogRecord('HAL', level, '', 0, text, (), None))
+    sent = d.client.text.call_args
+    assert [line['level'] for line in sent.kwargs['text_lines']] == [
+        'conversation', 'warning', 'error', 'error']
+    plain = '\n'.join(text for _, text in messages)
+    assert sent.args[0] == plain
+    # Cut inside the warning, not at a message boundary.
+    d.handler.max_chars = len(plain) - plain.index('Warning line two.')
+    lines = d.handler._compose_lines()
+    assert ''.join(line['text'] for line in lines) == '…\n' + plain[-d.handler.max_chars:]
+    assert lines[1] == {'text': 'Warning line two.', 'level': 'warning'}
+    assert '\x1b' not in d.handler._compose_text()
+
+
+def test_raw_http_fallback_carries_the_same_level_metadata(delivery):
+    d = delivery
+    d.handler._client = None
+    d.handler._session = Mock()
+    d.handler.handle(logging.LogRecord('HAL', 40, '', 0, 'Error message.', (), None))
+    payload = d.handler._session.post.call_args.kwargs['json']
+    assert payload['text'] == 'Error message.'
+    assert payload['text_lines'] == [{'text': 'Error message.', 'level': 'error'}]

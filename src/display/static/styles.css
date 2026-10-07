@@ -99,6 +99,9 @@ body {
     scrollbar-width: none;
 }
 
+.transcript-warning { color: #ffeb3b; }
+.transcript-error { color: #ff6666; }
+
 .citations {
     position: absolute;
     right: 20px;

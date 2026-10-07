@@ -28,6 +28,7 @@ class DisplayClient:
         *,
         type: ContentType,
         text: Optional[str] = None,
+        text_lines: Optional[list[dict]] = None,
         src: Optional[str] = None,
         slots: Optional[Iterable[PanelSlot]] = None,
         priority: int = 50,
@@ -49,6 +50,8 @@ class DisplayClient:
             "fit": fit,
             "bg": bg,
         }
+        if text_lines is not None:
+            payload['text_lines'] = text_lines
         r = self._s.post(f"{self.base}/api/push", json=payload, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
@@ -112,10 +115,10 @@ class DisplayClient:
     def text(
         self, msg: str, *, on: Iterable[PanelSlot]=("top",), priority: int=50,
         ttl: Optional[int]=120, key: Optional[str]=None, fullscreen: bool=False,
-        bg: str="#000"
+        bg: str="#000", text_lines: Optional[list[dict]]=None
     ):
         return self.push(type="text", text=msg, slots=on, priority=priority,
-                         ttl_secs=ttl, key=key, fullscreen=fullscreen, bg=bg)
+                         ttl_secs=ttl, key=key, fullscreen=fullscreen, bg=bg, text_lines=text_lines)
 
     def image(
         self, src: str, *, on: Iterable[PanelSlot]=("top",), priority: int=50,

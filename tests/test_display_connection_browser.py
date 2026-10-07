@@ -256,3 +256,26 @@ def test_delayed_socket_frame_cannot_restore_text_after_a_newer_http_snapshot(di
     # The delayed socket contains a pre-clear frame; HTTP already showed newer state.
     page.evaluate("payload => testSocket.onmessage({data: JSON.stringify({type:'render', payload})})", old)
     assert page.locator('#bottom .text-content').count() == 0
+
+
+def test_transcript_warning_and_error_colors_are_per_message_and_text_is_safe(display_browser):
+    fixture = display_browser
+    page = fixture.page
+    page.goto(fixture.display.base)
+    page.wait_for_selector('#bottom img')
+    for level, text in [(25, 'HAL: An ordinary conversation about errors.'),
+                        (30, 'Warning: <img src=x onerror=alert(1)>\nA second warning line.'),
+                        (40, 'Error: Unable to complete that request.'),
+                        (50, 'Critical: A serious error.')]:
+        fixture.handler.handle(logging.LogRecord('HAL', level, '', 0, text, (), None))
+    page.wait_for_function("document.querySelectorAll('#bottom .transcript-error').length === 2")
+    expected = {'conversation': 'rgb(0, 255, 255)', 'warning': 'rgb(255, 235, 59)', 'error': 'rgb(255, 102, 102)'}
+    for level, color in expected.items():
+        assert page.locator('#bottom .transcript-' + level).first.evaluate('e => getComputedStyle(e).color') == color
+    assert '<img src=x onerror=alert(1)>' in page.locator('#bottom .transcript-warning').inner_text()
+    assert page.locator('#bottom .text-content img').count() == 0
+    # Legacy/plain text callers still work, with no leftover error styling.
+    fixture.display.text('HAL: Back to ordinary text.', on=('bottom',), key='logs')
+    page.wait_for_function("document.querySelector('#bottom .text-content').textContent === 'HAL: Back to ordinary text.'")
+    assert page.locator('#bottom .transcript-error').count() == 0
+    assert page.locator('#bottom .text-content').evaluate('e => getComputedStyle(e).color') == expected['conversation']

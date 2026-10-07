@@ -79,7 +79,9 @@ class DisplayPushHandler(logging.Handler):
             return
 
         with self.lock:
-            self._lines.append(line)
+            level = ('error' if record.levelno >= logging.ERROR else
+                     'warning' if record.levelno >= logging.WARNING else 'conversation')
+            self._lines.append({'text': line, 'level': level})
             self._expires_at = time.monotonic() + self.ttl_secs if self.ttl_secs else None
             self._request_push()
 
@@ -141,14 +143,26 @@ class DisplayPushHandler(logging.Handler):
 
     # ---- internals ----
     def _compose_text(self) -> str:
-        text = "\n".join(self._lines)
-        if len(text) > self.max_chars:
-            # keep tail, show an ellipsis marker
-            text = "…\n" + text[-self.max_chars:]
-        return text
+        return ''.join(line['text'] for line in self._compose_lines())
+
+    def _compose_lines(self) -> list[dict]:
+        # Trim the same plain-text tail as before, retaining each record's level
+        # even when the character boundary falls inside a multiline warning.
+        size = sum(len(line['text']) for line in self._lines) + max(0, len(self._lines) - 1)
+        discard = max(0, size - self.max_chars)
+        result = [{'text': '…\n', 'level': 'conversation'}] if discard else []
+        for index, line in enumerate(self._lines):
+            text = ('\n' if index else '') + line['text']
+            if discard >= len(text):
+                discard -= len(text)
+                continue
+            result.append({'text': text[discard:], 'level': line['level']})
+            discard = 0
+        return result
 
     def _push(self, now: float) -> None:
-        payload_text = self._compose_text()
+        payload_lines = self._compose_lines()
+        payload_text = ''.join(line['text'] for line in payload_lines)
         ttl = (None if self._responding or self._expires_at is None
                else max(1, math.ceil(self._expires_at - now)))
         try:
@@ -156,6 +170,7 @@ class DisplayPushHandler(logging.Handler):
                 # Use the nice wrapper
                 self._client.text(
                     payload_text,
+                    text_lines=payload_lines,
                     on=self.slots,
                     priority=self.priority,
                     ttl=ttl,
@@ -169,6 +184,7 @@ class DisplayPushHandler(logging.Handler):
                     json={
                         "type": "text",
                         "text": payload_text,
+                        "text_lines": payload_lines,
                         "slots": list(self.slots),
                         "priority": self.priority,
                         "ttl_secs": ttl,
