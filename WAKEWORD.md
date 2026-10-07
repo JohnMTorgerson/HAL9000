@@ -177,8 +177,7 @@ To enable it, add these entries to your existing `.env` and restart HAL:
 
 ```dotenv
 FOLLOWUP_ENABLED=true
-FOLLOWUP_WINDOW_SECONDS=8
-FOLLOWUP_SESSION_SECONDS=120
+FOLLOWUP_WINDOW_SECONDS=30
 ```
 
 Keep `TRANSCRIPTION_MODE=static` and your working transcription, wake, and Luna
@@ -189,7 +188,7 @@ goes through the existing query transcriber. The feature requires
 `gpt-6-luna`. It preserves the configured Fast tier and Luna's disabled reasoning.
 
 The window opens after HAL's **final reply finishes playing**, never during his
-voice or after an intermediate “Just a moment.” It lasts eight seconds by
+voice or after an intermediate “Just a moment.” It lasts thirty seconds by
 default, including microphone startup. Speech that starts before the deadline
 can finish afterward, subject to the existing command-length limit. A short
 buffer-delivery allowance accommodates microphone latency at the boundary;
@@ -213,12 +212,13 @@ report an error without treating the raw output as a reply. No second LLM call
 is made to classify an otherwise accepted follow-up; normal external requests
 still use their existing follow-through call.
 
-The separate session limit starts when HAL finishes replying to an explicit
-wake/spacebar request. Accepted automatic follow-ups cannot extend this limit.
-An utterance already started may finish, but no further automatic window opens
-after the limit. A fresh explicit request starts a new session. During an open
-window, a clear “Hey HAL” in the query transcript tells Luna to treat it as
-directly addressed and resets the session if answered. The ambiguous “hey how”
+There is no overall session time limit. Every accepted exchange renews the full
+configured window after HAL finishes his reply, including an utterance that
+started just before the old deadline and finished afterward. A conversation can
+continue for as long as accepted exchanges continue. Silence or ignored speech
+does not renew the window; on expiry, a fresh explicit request is needed.
+During an open window, a clear “Hey HAL” in the query transcript tells Luna to
+treat it as directly addressed. The ambiguous “hey how”
 variant still works in idle wake detection but does not override the follow-up
 filter by itself. Spacebar retains priority and uses the ordinary unfiltered
 request path. End phrases such as “That's all, HAL” or “Stop listening” can be
@@ -226,16 +226,52 @@ spoken as automatic follow-ups.
 
 Luna is instructed to accept clear continuations, corrections, answers to its
 questions, and assistant-directed changes of subject; uncertain background
-dialogue is ignored. It cannot reliably distinguish identical words spoken by
+dialogue is ignored. Short answers such as “Not really,” “Probably,” or “I'm not
+sure” are interpreted in the context of HAL's last question; a negative answer
+alone does not end the conversation. Declining an offered lookup should not
+perform that lookup or immediately repeat the offer. There is no separate timer
+or extra classification call for answers to HAL's questions.
+It cannot reliably distinguish identical words spoken by
 you versus a TV character. Test this with your actual room and conversations.
-The session limit prevents automatic replies from extending listening forever
-even if some background speech is accepted by mistake.
+Ignored speech cannot keep the window open. Speech mistakenly accepted as
+addressed to HAL can renew it, so the local microphone setting and filter quality
+still matter. “Stop listening” closes it explicitly.
 
 | Setting | Default | Accepted values |
 | --- | --- | --- |
 | `FOLLOWUP_ENABLED` | `false` | `true` or `false` |
-| `FOLLOWUP_WINDOW_SECONDS` | `8` | 1–30 seconds |
-| `FOLLOWUP_SESSION_SECONDS` | `120` | At least the window length, up to 600 seconds |
+| `FOLLOWUP_WINDOW_SECONDS` | `30` | 1–180 seconds |
+
+Existing `.env` values override these defaults. `180` seconds is the maximum
+accepted window override, not a session cap. The old `FOLLOWUP_SESSION_SECONDS`
+setting is no longer used and can be removed; leaving it present has no effect.
+At timeout HAL silently returns to wake/spacebar listening; there is no reminder,
+extra question or model call to keep the conversation alive.
+
+### Conversational style
+
+HAL answers the request first and may occasionally add a relevant observation,
+reasoned opinion, or one thoughtful follow-up question. The prompt uses context
+and recent engagement rather than a probability, fixed frequency, or quota.
+Concise factual replies remain appropriate. HAL should respond to the user's
+answer before considering another question, avoid repetitive offers and avoid
+turning every exchange into an interview.
+
+Relevant supplied memories can connect a reply to previous discussions, the
+user's interests, or HAL's own views. He may disagree politely or revise a view
+with reasons; he must not invent shared experiences. Speculation is distinguished
+from known facts. Ordinary disclosures and dilemmas invite conversation: saying
+“I'm debating whether to go to choir practice tonight” must not trigger a calendar
+lookup just because it mentions a plan. Actual schedule/time/conflict questions
+still use the calendar protocol.
+
+These instructions apply within existing response requests and preserve command-only
+output for API/image/song actions. Natural observations may follow the requested
+information in the final spoken reply. No autonomous conversation initiation,
+new utterance-completeness judgment, or change to silence/spacebar capture is added.
+The 30-second window is time to START speaking, not a new maximum utterance length.
+The prompt's judgment and tone need evaluation in actual conversation; local tests
+verify timers and request/control handling without paid model calls.
 
 If background noise triggers a follow-up capture but transcription returns no
 speech, HAL logs `FOLLOWUP heard: [empty transcription]` and resumes listening

@@ -25,29 +25,30 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(session.deadline())
         clock.advance(10)
         session.after_response(explicit=True)
-        self.assertEqual(session.deadline(), 18)
+        self.assertEqual(session.deadline(), 40)
         clock.advance(3)  # Capturing, transcribing and ignoring uses real time.
-        self.assertEqual(session.deadline(), 18)
-        self.assertEqual(session.deadline() - clock.now, 5)
+        self.assertEqual(session.deadline(), 40)
+        self.assertEqual(session.deadline() - clock.now, 27)
         session.close()  # end, rather than ignore
         self.assertIsNone(session.deadline())
 
-    def test_accepted_turns_do_not_move_session_limit_and_explicit_wake_can_reset_it(self):
+    def test_accepted_turns_renew_window_without_any_total_session_limit(self):
         clock = hal_tests.SimulatedClock()
         session = FollowupSession(FollowupSettings(enabled=True), clock.perf_counter)
         session.after_response(explicit=True)
-        for _ in range(17):
-            clock.advance(7)
+        for _ in range(40):
+            clock.advance(29)
             session.after_response(explicit=False)
-            self.assertEqual(session.session_end, 120)
-            self.assertLessEqual(session.deadline(), 120)
-        self.assertEqual(session.deadline(), 120)
-        clock.advance(3)  # A turn can finish after its start deadline.
+            self.assertEqual(session.deadline(), clock.now + 30)
+        self.assertGreater(clock.now, 600)
+        clock.advance(31)  # Speech started in time but finished after the deadline.
         session.after_response(explicit=False)
-        self.assertIsNone(session.deadline())
+        self.assertEqual(session.deadline(), clock.now + 30)
+        session.close()
+        session.after_response(explicit=False)
+        self.assertIsNone(session.deadline())  # A closed window needs an explicit trigger.
         session.after_response(explicit=True)
-        self.assertEqual(session.session_end, 242)
-        self.assertEqual(session.deadline(), 130)
+        self.assertEqual(session.deadline(), clock.now + 30)
 
     def test_timeout_and_disabled_mode_never_open_a_window(self):
         clock = hal_tests.SimulatedClock()
@@ -56,19 +57,24 @@ class SessionTests(unittest.TestCase):
         self.assertIsNone(off.deadline())
         on = FollowupSession(FollowupSettings(enabled=True), clock.perf_counter)
         on.after_response(explicit=True)
-        clock.advance(8)
+        clock.advance(30)
         self.assertIsNone(on.deadline())
         on.after_response(explicit=False)
         self.assertIsNone(on.deadline())
 
     def test_configuration_and_explicit_address_do_not_treat_hey_how_as_an_override(self):
         with patch.dict('os.environ', {}, clear=True):
-            self.assertEqual(FollowupSettings.from_env(), FollowupSettings())
+            self.assertEqual(FollowupSettings.from_env(), FollowupSettings(False, 30))
+        with patch.dict('os.environ', {'FOLLOWUP_ENABLED': 'true', 'FOLLOWUP_WINDOW_SECONDS': '30'}, clear=True):
+            self.assertEqual(FollowupSettings.from_env(), FollowupSettings(True, 30))
         with patch.dict('os.environ', {'FOLLOWUP_ENABLED': 'True', 'FOLLOWUP_WINDOW_SECONDS': '6',
                                       'FOLLOWUP_SESSION_SECONDS': '90'}, clear=True):
-            self.assertEqual(FollowupSettings.from_env(), FollowupSettings(True, 6, 90))
-        for values in ({'window': 0}, {'window': 31}, {'window': float('nan')},
-                       {'session_limit': 3}, {'session_limit': float('inf')}):
+            self.assertEqual(FollowupSettings.from_env(), FollowupSettings(True, 6))
+        with patch.dict('os.environ', {'FOLLOWUP_ENABLED': 'true', 'FOLLOWUP_WINDOW_SECONDS': '180',
+                                      'FOLLOWUP_SESSION_SECONDS': 'invalid obsolete setting'}, clear=True):
+            self.assertEqual(FollowupSettings.from_env(), FollowupSettings(True, 180))
+        for values in ({'window': 0}, {'window': 181}, {'window': float('nan')},
+                       {'window': float('inf')}):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 FollowupSettings(**values)
         with patch.dict('os.environ', {'FOLLOWUP_ENABLED': 'maybe'}), self.assertRaises(ValueError):
@@ -343,7 +349,7 @@ class MainLoopTests(unittest.TestCase):
                 if len(reads) == 3:
                     self.assertEqual(deadline, deadlines[0])  # ignore didn't renew
                 else:
-                    self.assertEqual(deadline, playback_ends[-1] + 8)
+                    self.assertEqual(deadline, playback_ends[-1] + 30)
                 clock.advance(.2)
                 on_trigger('followup')
             else:
@@ -375,9 +381,9 @@ class MainLoopTests(unittest.TestCase):
             if call.args[0] == 'FOLLOWUP heard: %s':
                 self.assertEqual(call.kwargs['extra'], {'speech_role': 'user'})
 
-    def test_direct_wake_in_followup_is_signalled_to_luna_and_resets_session_after_reply(self):
+    def test_direct_wake_in_followup_is_signalled_to_luna_and_renews_window_after_reply(self):
         ns, run, clock = self.fixture()
-        ns['followup_settings'] = FollowupSettings(True, 8, 8)
+        ns['followup_settings'] = FollowupSettings(True, 8)
         ns['stt'].transcribe.side_effect = ['First request.', 'Hey HAL, a new question.']
         ns['llm'].get_response.return_value = 'Ready.'
         ns['llm'].get_followup_response.return_value = FollowupDecision('respond', 'A new answer.')
@@ -400,6 +406,46 @@ class MainLoopTests(unittest.TestCase):
             run()
         ns['llm'].get_followup_response.assert_called_once_with(
             'Hey HAL, a new question.', explicitly_addressed=True)
+
+    def test_accepted_followups_continue_past_three_minutes_then_silence_closes_window(self):
+        ns, run, clock = self.fixture()
+        ns['stt'].transcribe.return_value = 'Let us continue discussing this.'
+        ns['llm'].get_response.return_value = 'Certainly.'
+        ns['llm'].get_followup_response.return_value = FollowupDecision('respond', 'I see.')
+        reads = []
+        session_start = None
+
+        def read(on_trigger, **kwargs):
+            nonlocal session_start
+            reads.append(kwargs)
+            if len(reads) == 1:
+                clock.advance(100)  # Long idle time does not consume the session.
+                on_trigger('wakeword')
+            elif len(reads) <= 10:
+                if session_start is None:
+                    session_start = clock.now  # First reply has finished playing.
+                deadline = kwargs['followup_deadline']
+                self.assertEqual(deadline, clock.now + 30)
+                clock.advance(deadline - clock.now - .25)
+                on_trigger('followup')  # Start before the boundary; finish afterward.
+            elif len(reads) == 11:
+                self.assertGreater(clock.now, session_start + 180)
+                clock.advance(kwargs['followup_deadline'] - clock.now)
+                return None  # Silent timeout produces no transcription or LLM request.
+            else:
+                self.assertNotIn('followup_deadline', kwargs)
+                raise KeyboardInterrupt
+            clock.advance(.5)
+            return [.1], 16000
+
+        ns['voice_input'].read_command.side_effect = read
+        with self.assertRaises(SystemExit):
+            run()
+        self.assertEqual(ns['llm'].get_followup_response.call_count, 9)
+        self.assertEqual(ns['llm'].get_response.call_count, 1)
+        self.assertEqual(ns['llm'].finish_turn.call_count, 10)
+        self.assertEqual(ns['stt'].transcribe.call_count, 10)
+        self.assertNotIn('followup_deadline', reads[-1])
 
     def test_empty_followup_keeps_original_twelve_second_deadline_or_expires(self):
         for transcription_seconds in (2., 13.):

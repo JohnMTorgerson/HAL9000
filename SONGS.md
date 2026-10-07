@@ -15,8 +15,8 @@ applies when needed. No new dependencies or environment settings are required.
 
 The command works for explicit wake/spacebar requests and accepted follow-ups.
 The microphone stays closed through the introduction, pause, and entire song.
-If follow-ups are enabled, their window starts after playback subject to the
-existing conversation session limit. Ctrl-C still stops HAL.
+If follow-ups are enabled, their full window starts after playback. There is
+no overall conversation time limit. Ctrl-C still stops HAL.
 
 Only Daisy is bundled. Questions about the song, quoted singing requests, and
 requests not to sing should receive ordinary replies. A request for another

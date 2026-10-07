@@ -93,7 +93,7 @@ def test_intro_pause_song_and_history_finish_before_microphone_reopens(followup)
             on_trigger('followup')
         else:
             assert events[-1][0] == 'history'
-            assert kwargs['followup_deadline'] == clock.now + 8
+            assert kwargs['followup_deadline'] == clock.now + 30
             ns['DisplayServerManager'].return_value.stop.assert_not_called()
             raise KeyboardInterrupt
         return [.1], 16000

@@ -182,9 +182,9 @@ images = ImageWorkflow(make_image_provider(llm, logger), display,
 
 if followup_settings.enabled and LLM_BACKEND != 'openai':
     raise ValueError('FOLLOWUP_ENABLED requires LLM_BACKEND=openai with structured-output support.')
-logger.info('Follow-up listening: %s; window %.1fs; session limit %.1fs.',
+logger.info('Follow-up listening: %s; window %.1fs; no overall session limit.',
             'enabled' if followup_settings.enabled else 'disabled',
-            followup_settings.window, followup_settings.session_limit)
+            followup_settings.window)
 
 # ------------------------------------------------------------
 # Get LED if on raspberry pi, dummy if not

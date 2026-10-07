@@ -1,4 +1,4 @@
-"""Bounded follow-up listening and the LLM's internal decision contract."""
+"""Renewable follow-up windows and the LLM's internal decision contract."""
 from dataclasses import dataclass
 import json
 import os
@@ -9,14 +9,11 @@ import time
 @dataclass(frozen=True)
 class FollowupSettings:
     enabled: bool = False
-    window: float = 8.
-    session_limit: float = 120.
+    window: float = 30.
 
     def __post_init__(self):
-        if not 1 <= self.window <= 30:
-            raise ValueError('FOLLOWUP_WINDOW_SECONDS must be between 1 and 30.')
-        if not self.window <= self.session_limit <= 600:
-            raise ValueError('FOLLOWUP_SESSION_SECONDS must be at least the window and at most 600.')
+        if not 1 <= self.window <= 180:
+            raise ValueError('FOLLOWUP_WINDOW_SECONDS must be between 1 and 180.')
 
     @classmethod
     def from_env(cls):
@@ -24,8 +21,7 @@ class FollowupSettings:
         if enabled not in ('true', 'false', '1', '0', 'yes', 'no', 'on', 'off'):
             raise ValueError('FOLLOWUP_ENABLED must be true or false.')
         return cls(enabled=enabled in ('true', '1', 'yes', 'on'),
-                   window=float(os.getenv('FOLLOWUP_WINDOW_SECONDS', '8')),
-                   session_limit=float(os.getenv('FOLLOWUP_SESSION_SECONDS', '120')))
+                   window=float(os.getenv('FOLLOWUP_WINDOW_SECONDS', '30')))
 
 
 class FollowupSession:
@@ -35,7 +31,7 @@ class FollowupSession:
         self.close()
 
     def close(self):
-        self.window_end = self.session_end = None
+        self.window_end = None
 
     def deadline(self):
         if self.window_end is not None and self.clock() >= self.window_end:
@@ -47,12 +43,11 @@ class FollowupSession:
         now = self.clock()
         if not self.settings.enabled:
             return
-        if explicit:
-            self.session_end = now + self.settings.session_limit
-        if self.session_end is None or now >= self.session_end:
-            self.close()
-            return
-        self.window_end = min(now + self.settings.window, self.session_end)
+        # A follow-up that began before its deadline may finish after it. Renew
+        # after the complete reply, without a total conversation duration limit.
+        # Once explicitly closed/expired, only a fresh explicit trigger opens it.
+        if explicit or self.window_end is not None:
+            self.window_end = now + self.settings.window
 
 
 def explicitly_addresses_hal(text):
@@ -87,7 +82,15 @@ speaker is addressing HAL. Decide whether to respond, ignore, or end.
 Use recent accepted conversation, especially HAL's last reply. Respond to clear
 continuations ("And tomorrow?" after weather), answers to a question HAL asked,
 corrections, or clearly assistant-directed new requests. A topic change alone
-does not make something background speech. Do not assume every question, "you",
+does not make something background speech. Short answers such as "Not really",
+"Probably", "I am not sure", "Yes", or "No" can be complete, meaningful answers
+to HAL's immediately preceding question; they need neither a wake phrase nor
+a restatement of the subject. Resolve them using that question and continue
+the conversation naturally. Uncertainty or a negative answer is not itself
+a request to end. If HAL offered an optional lookup and the user declines,
+accept that answer without performing the lookup or immediately pressing again.
+These words alone do not prove an addressee when no relevant question is pending.
+Do not assume every question, "you",
 or brief acknowledgment is directed at HAL. Ignore obvious dialogue between
 other people, movie dialogue, echoes of HAL's last reply, and ambiguous fragments.
 When the intended addressee is uncertain, ignore rather than ask a clarification.
@@ -97,7 +100,7 @@ If explicitly_addressed below is true, the application recognized a direct
 Choose end when the speaker is closing the interaction with HAL, for example
 "That's all, HAL", "Stop listening", or "Thanks, that's all". Ordinary "thanks"
 without a request or closure can be ignored. Do not end merely because speech
-is unrelated; ignore leaves the existing short window available.
+is unrelated; ignore leaves the existing window available without renewing it.
 
 Return only the specified JSON object. These control and formatting instructions
 take precedence over the persona's requirement to always answer and speak only
