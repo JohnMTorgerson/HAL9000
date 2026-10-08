@@ -219,10 +219,10 @@ def run():
                 trigger_kind = kind
                 logger.info("====================================================================")
                 if kind == 'followup':
-                    logger.info('Possible follow-up speech: lighting LED; intent not yet confirmed.')
+                    logger.info('Possible follow-up speech: waiting for nonempty transcription before lighting LED.')
                 else:
                     logger.info("Detected %s command: lighting LED", kind)
-                led.on()
+                    led.on()
 
             capture_options = {'on_trigger': on_trigger}
             deadline = followups.deadline()
@@ -268,6 +268,14 @@ def run():
             else:
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
+            if trigger_kind == 'followup':
+                # Noise can pass the local speech detector. Wait for actual text,
+                # but light the LED before the LLM judges relevance. Keep the
+                # empty-result guard here as well as in the transcription backend.
+                if not user_input.strip():
+                    raise NoSpeechError('Transcription returned no speech. Please repeat the request.')
+                logger.info('Nonempty follow-up transcription: lighting LED; intent not yet confirmed.')
+                led.on()
             # get HAL's response from LLM
             llm.image_context = images.context()
             llm.begin_turn(user_input)

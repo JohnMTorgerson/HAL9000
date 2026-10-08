@@ -497,6 +497,77 @@ class MainLoopTests(unittest.TestCase):
                 self.assertIn('FOLLOWUP heard: [empty transcription]', messages)
                 self.assertTrue(any('Empty follow-up ignored;' in message for message in messages))
 
+    def test_followup_led_waits_for_text_but_not_for_relevance(self):
+        for mode in ('static', 'live'):
+            for outcome in ('no_speech', '', ' \n\t', 'ignore', 'respond', 'end', 'error'):
+                with self.subTest(mode=mode, outcome=outcome):
+                    ns, run, clock = self.fixture()
+                    ns['stt'].mode = mode
+                    ns['llm'].get_response.return_value = 'Ready.'
+                    reads = []
+                    empty = outcome in ('no_speech', '', ' \n\t')
+
+                    def transcribe(*args, **kwargs):
+                        if len(reads) == 1:
+                            ns['led'].on.assert_called_once()  # Wakeword is immediate.
+                            return 'Hey HAL, are you there?'
+                        ns['led'].on.assert_called_once()  # No second activation yet.
+                        self.assertEqual(ns['led'].method_calls[-1][0], 'off')
+                        if outcome == 'no_speech':
+                            raise hal_tests.NoSpeechError('No speech.')
+                        return outcome if empty else 'Some transcribed words.'
+
+                    def decide(*args, **kwargs):
+                        self.assertEqual(ns['led'].on.call_count, 2)
+                        self.assertEqual(ns['led'].method_calls[-1][0], 'on')
+                        if outcome == 'error':
+                            raise LLMServiceError('Could not evaluate follow-up.')
+                        return FollowupDecision(outcome, 'I see.' if outcome == 'respond' else '')
+
+                    def read(on_trigger, **kwargs):
+                        reads.append(kwargs)
+                        if len(reads) == 3:
+                            self.assertEqual(ns['led'].method_calls[-1][0], 'off')
+                            self.assertEqual(ns['led'].on.call_count, 1 if empty else 2)
+                            if empty:
+                                ns['llm'].get_followup_response.assert_not_called()
+                                ns['llm'].begin_turn.assert_called_once()
+                                self.assertEqual(kwargs['followup_deadline'], reads[1]['followup_deadline'])
+                            raise KeyboardInterrupt
+                        on_trigger('wakeword' if len(reads) == 1 else 'followup')
+                        ns['led'].on.assert_called_once()
+                        return [.1], 16000
+
+                    ns['stt'].transcribe.side_effect = transcribe
+                    ns['llm'].get_followup_response.side_effect = decide
+                    ns['voice_input'].read_command.side_effect = read
+                    with self.assertRaises(SystemExit):
+                        run()
+
+    def test_spacebar_during_followup_still_lights_immediately(self):
+        ns, run, clock = self.fixture()
+        ns['llm'].get_response.return_value = 'Ready.'
+        reads = []
+
+        def read(on_trigger, **kwargs):
+            reads.append(kwargs)
+            if len(reads) == 3:
+                self.assertEqual(ns['led'].on.call_count, 2)
+                raise KeyboardInterrupt
+            if len(reads) == 2:
+                self.assertIn('followup_deadline', kwargs)
+                on_trigger('followup')  # A key press can take over a noise capture.
+                ns['led'].on.assert_called_once()
+            on_trigger('spacebar')
+            self.assertEqual(ns['led'].on.call_count, len(reads))
+            self.assertEqual(ns['stt'].transcribe.call_count, len(reads) - 1)
+            return [.1], 16000
+
+        ns['voice_input'].read_command.side_effect = read
+        with self.assertRaises(SystemExit):
+            run()
+        ns['llm'].get_followup_response.assert_not_called()
+
     def test_bad_followup_decision_closes_window_without_tts_or_external_requests(self):
         ns, run, clock = self.fixture()
         ns['llm'].get_response.return_value = 'Ready.'

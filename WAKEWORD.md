@@ -281,6 +281,13 @@ No LLM call, spoken response, or memory update is made for an empty result.
 Live transcription does not retry an empty result through the paid static
 fallback. Real transcription/service failures still close the window.
 
+During automatic follow-up capture, the LED stays off until transcription returns
+nonempty text. It then lights before the LLM decides whether the speech is meant
+for HAL, and turns off if the speech is ignored or ends the conversation, after
+HAL's response, or on an error. Noise with an empty transcription never lights it.
+Wake detection still lights the LED as soon as the local wake phrase is recognized;
+spacebar still lights it immediately when pressed, including during a follow-up.
+
 Silence is processed locally and makes no transcription or LLM request. Speech
 that is ultimately ignored can still incur API transcription and classification
 charges. INFO logs identify the open window, `respond`/`ignore`/`end` decisions,
@@ -523,8 +530,10 @@ synthesis, reply normalization, and playback preparation/start/finish. The
 acknowledgment clip, final reply, and optional debug query playback have separate
 labels. All durations use the monotonic performance clock.
 
-Trigger-to-playback time begins at the LED trigger callback; capture-ready time
-begins after the microphone has closed. These totals exclude the earlier wake
+Trigger-to-playback time begins at the capture-trigger callback (wake recognition,
+spacebar press, or follow-up speech detection). The later LED activation for
+follow-ups does not change this timing. Capture-ready time begins after the
+microphone has closed. These totals exclude the earlier wake
 scan and waiting for the user. Playback start is measured just after the audio
 output stream is started, not when sound physically reaches the speaker. The
 finish line includes the time spent playing the reply, which is not response
