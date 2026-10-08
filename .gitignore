@@ -17,6 +17,8 @@ __pycache__/
 data/memory/
 memory.json*
 recent_conversation.json*
+initiation.json*
+initiate.request*
 memory.log*
 
 # Downloaded image-search cache (local display only)

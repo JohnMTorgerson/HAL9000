@@ -32,6 +32,11 @@ relevant records with fuller evidence metadata. earlier_context helps resolve
 references; only new_turns provide NEW evidence. Rereading saved memories or earlier
 context is not fresh reinforcement. API payloads, ignored speech, and audio logs
 are not evidence. An appended [Application action result: ...] is not HAL's speech.
+An optional assistant_lead_in is an actual, dated HAL utterance spoken BEFORE the
+user_speech in that exchange. It provides context for answers such as 'yes'. It is
+assistant evidence only, never user speech. Ordinary availability checks and replies
+do not by themselves merit memories; useful answers to HAL's questions do. HAL's
+question alone cannot establish a personal fact or a belief he has not expressed.
 
 Sections:
 personal: Useful facts about {user_name}: pets, relationships, equipment, preferences,
@@ -183,8 +188,12 @@ independent statements can be new evidence. Logs/backups are not erased by this 
 """
 
 
-def recall_instructions():
-    return _RECALL_TEMPLATE.format(user_name=get_user_name())
+def recall_instructions(complete=False):
+    text = _RECALL_TEMPLATE.format(user_name=get_user_name())
+    if complete:
+        text = text.replace('It is a SELECTED\nSUBSET, not the complete archive.',
+                            'This is the COMPLETE compact memory catalogue for choosing a conversation opening.')
+    return text
 
 
 def update_instructions():

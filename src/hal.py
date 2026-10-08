@@ -15,6 +15,7 @@ from pydub.effects import normalize, compress_dynamic_range
 import io
 from llm_client import LLMClient, LLMServiceError
 from conversation_memory import ConversationMemory
+from conversation_initiation import ConversationInitiator, InitiationRequest
 from user_identity import get_user_name
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
@@ -185,6 +186,7 @@ if followup_settings.enabled and LLM_BACKEND != 'openai':
 logger.info('Follow-up listening: %s; window %.1fs; no overall session limit.',
             'enabled' if followup_settings.enabled else 'disabled',
             followup_settings.window)
+initiator = ConversationInitiator.from_env(logger, memory, LLM_BACKEND, followup_settings)
 
 # ------------------------------------------------------------
 # Get LED if on raspberry pi, dummy if not
@@ -194,6 +196,19 @@ led = get_led()
 # ------------------------------------------------------------
 # Main Loop
 # ------------------------------------------------------------
+def speak_reply(text, *, label='reply', **timing):
+    """Shared speech path for ordinary replies and the fixed availability check."""
+    stage_started = time.perf_counter()
+    with wave.open('hal_output.wav', 'wb') as wav_file:
+        voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+    logger.info('Timing: voice synthesis %.3fs.', time.perf_counter() - stage_started)
+    stage_started = time.perf_counter()
+    audio, fs = sf.read('hal_output.wav', dtype='float32')
+    sf.write('hal_output.wav', normalize_audio(audio), fs)
+    logger.info('Timing: reply audio normalization %.3fs.', time.perf_counter() - stage_started)
+    play_audio('hal_output.wav', label=label, **timing)
+
+
 def run():
     logger.info("========================= HAL 9000 is now online.\n")
     followups = FollowupSession(followup_settings, clock=time.perf_counter)
@@ -210,6 +225,8 @@ def run():
         try:
             triggered_at = None
             trigger_kind = None
+            initiation_result = None
+            close_after_reply = False
             # Capture continues while the wake detector processes its rolling window.
             # Live transcription can overlap capture. The microphone still
             # closes before any query reaches the LLM or HAL starts speaking.
@@ -226,12 +243,28 @@ def run():
 
             capture_options = {'on_trigger': on_trigger}
             deadline = followups.deadline()
+            if initiator is not None and deadline is None:
+                initiator.end_window()
+                llm.end_initiation()
+                capture_options['initiation'] = initiator
             if deadline is not None:
                 capture_options['followup_deadline'] = deadline
             if stt.mode == 'live':
                 live_stream = stt.create_live_stream()
                 capture_options['audio_stream'] = live_stream
             captured = voice_input.read_command(**capture_options)
+            if isinstance(captured, InitiationRequest):
+                prompt = f'{USER}, do you have a moment?'
+                if initiator is not None and initiator.begin(captured, prompt):
+                    display_handler.begin_response()
+                    led.on()
+                    logger.display(f'HAL: {prompt}', extra={'speech_role': 'hal'})
+                    speak_reply(prompt, label='availability')
+                    # The same listening window handles both availability and
+                    # ordinary answers; it starts only after playback finishes.
+                    followups.after_response(explicit=True)
+                    led.off()
+                continue
             if captured is None:
                 followups.close()
                 continue
@@ -281,7 +314,22 @@ def run():
             llm.begin_turn(user_input)
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
-            if trigger_kind == 'followup':
+            if initiator is not None and initiator.pending is not None:
+                logger.info('INITIATION heard: %s', user_input, extra={'speech_role': 'user'})
+                pending = initiator.pending
+                initiation_result = llm.get_initiation_response(user_input,
+                    lead_in={'at': pending['at'], 'text': pending['availability_prompt']},
+                    recent_attempts=initiator.recent_attempts(),
+                    explicitly_addressed=explicit or explicitly_addresses_hal(user_input))
+                if initiation_result.decision == 'ignore':
+                    led.off()
+                    continue
+                hal_reply = initiation_result.reply
+                close_after_reply = initiation_result.decision == 'decline'
+                explicit = True
+                display_handler.begin_response()
+                logger.display(f'USER: {user_input}', extra={'speech_role': 'user'})
+            elif trigger_kind == 'followup':
                 # Record every candidate before classification, including
                 # ignored/end speech and requests whose classification fails.
                 # INFO stays in the log file/terminal, below the display level.
@@ -307,8 +355,9 @@ def run():
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(user_input)
             logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
+            allow_actions = initiation_result is None or initiation_result.decision == 'respond'
 
-            if not llm.last_refusal:
+            if not llm.last_refusal and allow_actions:
                 routed_reply = repair_image_reply(user_input, hal_reply)
                 if routed_reply != hal_reply:
                     logger.info('Recovered missing image command: request=%s; original reply=%s',
@@ -319,7 +368,7 @@ def run():
 
             # If HAL claims not to know, force it to try Wikipedia before giving up
             # first testing if the query looks like a factual question about a named entity we can search for
-            if (not llm.last_refusal and
+            if (allow_actions and not llm.last_refusal and
                     not hal_reply.lstrip().startswith((PLAY_SONG_MARKER, IMAGE_MARKER)) and
                     re.search(r"(i\s+don.?t\s+know|i\s+don.?t\s+have|i.?m\s+sorry.*can.?t\s+do)", hal_reply.strip(), re.I)):
                 named_entities = extract_named_entities(user_input)
@@ -334,7 +383,7 @@ def run():
                     logger.debug("Either no named entities found or question was not parsed as factual. NOT forcing wikipedia search")
 
             # keep handling API calls until HAL gives a final answer
-            while not llm.last_refusal and hal_reply.startswith("[EXTERNAL_API_CALL]"):
+            while allow_actions and not llm.last_refusal and hal_reply.startswith("[EXTERNAL_API_CALL]"):
                 logger.display("HAL: Just a moment...", extra={'speech_role': 'hal'})
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
                            triggered_at=triggered_at, capture_ready_at=capture_ready_at,
@@ -362,7 +411,7 @@ def run():
 
             action_result = None
             image_result = None
-            if not llm.last_refusal and hal_reply.lstrip().startswith(IMAGE_MARKER):
+            if allow_actions and not llm.last_refusal and hal_reply.lstrip().startswith(IMAGE_MARKER):
                 def image_wait():
                     nonlocal first_response
                     logger.display('HAL: Just a moment.', extra={'speech_role': 'hal'})
@@ -378,7 +427,7 @@ def run():
             # command/JSON to Piper or play the external-API waiting clip.
             song = None
             try:
-                song = parse_song_request(hal_reply) if image_result is None and not llm.last_refusal else None
+                song = parse_song_request(hal_reply) if allow_actions and image_result is None and not llm.last_refusal else None
                 if song is not None:
                     if not DAISY_PATH.is_file():
                         raise OSError(f'Song recording is missing: {DAISY_PATH}')
@@ -397,21 +446,7 @@ def run():
 
             logger.display(f"HAL: {hal_reply}", extra={'speech_role': 'hal'})
 
-            # create audio from response text and save to file
-            stage_started = time.perf_counter()
-            with wave.open("hal_output.wav", "wb") as wav_file:
-                voice.synthesize_wav(hal_reply, wav_file, syn_config=syn_config)
-            logger.info('Timing: voice synthesis %.3fs.', time.perf_counter() - stage_started)
-
-            # normalize audio file
-            stage_started = time.perf_counter()
-            audio, fs = sf.read("hal_output.wav", dtype="float32")
-            normalized_audio = normalize_audio(audio)
-            sf.write("hal_output.wav", normalized_audio, fs)
-            logger.info('Timing: reply audio normalization %.3fs.', time.perf_counter() - stage_started)
-
-            # play audio of HAL's response from normalized file
-            play_audio("hal_output.wav", label='reply', triggered_at=triggered_at,
+            speak_reply(hal_reply, triggered_at=triggered_at,
                        capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at,
                        first_response=first_response)
             if song is not None:
@@ -436,7 +471,17 @@ def run():
             else:
                 llm.finish_turn(user_input, hal_reply)
             # Never open a window after "Just a moment", an intro, or during a song.
-            followups.after_response(explicit=explicit)
+            if initiator is not None:
+                if initiation_result is not None:
+                    # Save the actual spoken opening, after successful playback.
+                    initiation_result.reply = hal_reply
+                    initiator.resolved(initiation_result)
+                else:
+                    initiator.engaged()
+            if close_after_reply:
+                followups.close()
+            else:
+                followups.after_response(explicit=explicit)
 
             #turn LED off
             logger.info("Turning LED off")
@@ -475,6 +520,8 @@ def run():
 
         except (LLMServiceError, TranscriptionError) as exc:
             followups.close()
+            if initiator is not None:
+                initiator.end_window('failed')
             led.off()
             logger.error("%s", exc)
             logger.display(f"HAL: {exc}")
@@ -483,6 +530,8 @@ def run():
 
         except KeyboardInterrupt:
             followups.close()
+            if initiator is not None:
+                initiator.end_window('interrupted')
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
             display_handler.close()
             display_mgr.stop()
@@ -492,12 +541,19 @@ def run():
 
         except Exception:
             followups.close()
+            if initiator is not None:
+                initiator.end_window('failed')
             display_handler.close()
             display_mgr.stop()
             led.off()
             llm.close_memory()
             raise
         finally:
+            if initiator is not None:
+                initiator.interacted()
+                if followups.window_end is None:
+                    initiator.end_window()
+                    llm.end_initiation()
             display_handler.end_response()
             if live_stream is not None:
                 live_stream.close()

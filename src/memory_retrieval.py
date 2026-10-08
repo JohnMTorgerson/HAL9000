@@ -91,7 +91,10 @@ def _context(recent_turns):
         recency = 0.5 ** age
         turn_detail = {'turn_id': turn.get('id'), 'age': age}
         for field, speaker_weight in (('user_speech', 1.0), ('assistant_reply', 0.75)):
-            terms = _terms(turn.get(field, ''))
+            text = turn.get(field, '')
+            if field == 'assistant_reply':
+                text += '\n' + turn.get('assistant_lead_in', {}).get('text', '')
+            terms = _terms(text)
             turn_detail[field + '_terms'] = sorted(terms)
             for term in terms:
                 # Repetition should not swamp a new topic; keep the strongest

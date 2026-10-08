@@ -108,9 +108,18 @@ Edits detected while HAL is running are rejected rather than overwritten.
 
 The recent file usually contains the last `LLM_MAX_HISTORY` completed exchanges.
 It can also retain older **pending** exchanges while an update is unfinished or
-failed. Only the most recent configured number are supplied to the foreground.
+failed. Ordinary foreground replies receive only the most recent configured
+number. Optional [conversation initiation](INITIATION.md) includes all retained
+transcripts when choosing an opening.
 Completed exchanges are timestamped, so yesterday's plans are not presented as
 today's live information. There is no import of old logs or raw microphone audio.
+
+An accepted reply to HAL's availability question also saves an optional
+`assistant_lead_in` with that question and its timestamp. It is reconstructed as
+assistant speech before the actual user reply, and evidence validation preserves
+that attribution. The recent file remains version 1; existing entries need no
+migration. Initiation timing and recent openings are saved separately in
+`initiation.json`; copy that file too when moving memory if initiation is enabled.
 
 ## What is remembered
 
@@ -263,6 +272,13 @@ exact model-token limit. It applies to selected memory records in foreground rec
 and the updater's selected records; the persona, recent transcript, new exchange,
 compact archive catalogue, tagging work, and other prompt material are additional.
 It never deletes stored records.
+
+Conversation initiation is an exception to foreground selection: its single
+opening request receives every compact record and the retained recent dialogue,
+without budget filtering. Records used in the opening can also supplement the
+ordinary followup selection until that listening window ends. This may exceed
+the usual soft budget; the additional records and total size are logged. Normal
+user-led requests continue to use local selection.
 
 Tags help with the gap between a broad query such as “football” and a narrower
 fact such as Vikings fandom. Pure local text matching can still miss unexpected

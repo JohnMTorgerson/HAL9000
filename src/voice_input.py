@@ -93,7 +93,8 @@ class VoiceInput:
                 logger.exception('Follow-up speech detector unavailable; explicit triggers remain usable.')
         return cls(settings, logger, detector, device_selector, speech_detector=speech_detector)
 
-    def read_command(self, on_trigger=lambda kind: None, audio_stream=None, followup_deadline=None):
+    def read_command(self, on_trigger=lambda kind: None, audio_stream=None, followup_deadline=None,
+                     initiation=None):
         """Return audio, or None when a follow-up window expires without speech."""
         settings = self.settings
         self.last_speech_end_at = None
@@ -128,6 +129,27 @@ class VoiceInput:
             active = None
             last_endpoint = 0
             last_followup_scan = 0
+            last_idle_scan = 0
+
+            def idle_opportunity():
+                nonlocal last_idle_scan
+                latest, _ = history.position()
+                if (initiation is None or followup_deadline is not None or active is not None or
+                        latest - last_idle_scan < rate or self.speech_detector is None or
+                        keys.snapshot()[0] is not None):
+                    return None
+                # Include audio received during a slow wake decode, not just
+                # its final second. An unobserved long gap cannot count as quiet.
+                gap = latest - last_idle_scan
+                start = max(0, min(last_idle_scan, latest - rate), latest - 30 * rate)
+                sample = to_audio(history.read(start, latest), rate)
+                last_idle_scan = latest
+                speech = gap > 30 * rate or bool(self.speech_detector.speech_bounds(sample))
+                rms = float(np.sqrt(np.mean(sample.astype(np.float64) ** 2))) if len(sample) else 0.
+                capture.check()
+                if keys.snapshot()[0] is not None:
+                    return None
+                return initiation.observe(speech=speech, sound_db=20 * np.log10(max(rms, 1e-12)))
             input_latency = getattr(capture, 'latency', settings.input_latency)
             self.logger.info('Listening on %s (%s Hz) for %s.', capture.device_name, rate,
                              'follow-up speech or spacebar' if followup_deadline is not None else
@@ -234,6 +256,8 @@ class VoiceInput:
                     time.sleep(.02)
                     continue
                 if self.detector is None or total - last_scan < hop:
+                    if opportunity := idle_opportunity():
+                        return opportunity  # finally closes the microphone before HAL speaks.
                     time.sleep(.02)
                     continue
                 skipped += max(0, (total - last_scan) // hop - 1)
@@ -259,6 +283,8 @@ class VoiceInput:
                 elif decision['seconds'] > settings.hop:
                     self.logger.debug('Wake scan took %.3fs (interval %.3fs); next scan uses latest audio.',
                                       decision['seconds'], settings.hop)
+                if opportunity := idle_opportunity():
+                    return opportunity
         finally:
             if not completed:
                 self.last_speech_end_at = None

@@ -223,36 +223,74 @@ class MemoryStore:
             _require(_text(turn.get('user_speech'), 20_000)
                      and _text(turn.get('assistant_reply'), 20_000), 'Invalid saved exchange.')
             datetime.fromisoformat(turn['at'])
+            if 'assistant_lead_in' in turn:
+                lead = turn['assistant_lead_in']
+                _require(isinstance(lead, dict) and set(lead) == {'at', 'text'}
+                         and _text(lead['text'], 20_000), 'Invalid assistant lead-in.')
+                datetime.fromisoformat(lead['at'])
 
     def _active_memory(self):
         return {section: copy.deepcopy(self.memory[section]) for section in SECTIONS}
 
-    def recall(self, query='', *, token_budget=3000):
+    @staticmethod
+    def _history(recent):
+        history = []
+        for turn in recent:
+            if lead := turn.get('assistant_lead_in'):
+                history.append({'role': 'assistant', 'content': f"[{lead['at']}] {lead['text']}"})
+            history.extend([
+                {'role': 'user', 'content': f"[{turn['at']}] {turn['user_speech']}"},
+                {'role': 'assistant', 'content': turn['assistant_reply']},
+            ])
+        return history
+
+    def initiation_context(self):
+        """Complete compact catalogue plus retained transcripts, without a selector call."""
+        with self.lock:
+            facts = {section: [compact_entry(item) for item in items]
+                     for section, items in self._active_memory().items()}
+            recent = [t for t in self.recent['turns']
+                      if t['id'] > self.memory['context_after_turn']]
+            self.logger.info('Initiation memory context: %s', json.dumps({
+                'catalogue': facts, 'recent_turn_ids': [t['id'] for t in recent],
+                'selection': 'all compact records; no token-budget filtering'}, ensure_ascii=False))
+            return self._history(recent), json.dumps(facts, ensure_ascii=False), [
+                item['id'] for items in facts.values() for item in items]
+
+    def recall(self, query='', *, token_budget=3000, pinned_ids=()):
         with self.lock:
             active = self._active_memory()
             recent = [turn for turn in self.recent['turns'][-self.max_history:]
                       if turn['id'] > self.memory['context_after_turn']]
             selected, diagnostics = retrieve(active, query, recent, token_budget=token_budget)
-            self.logger.info('Memory retrieval: %s', json.dumps(
-                {'purpose': 'foreground', **diagnostics}, ensure_ascii=False))
+            pinned = []
+            for section, items in active.items():
+                for item in items:
+                    if item['id'] in pinned_ids and not any(i['id'] == item['id'] for i in selected[section]):
+                        selected[section].append(item)
+                        pinned.append({'section': section, **compact_entry(item)})
             facts = {section: [compact_entry(item) for item in items]
                      for section, items in selected.items()}
-            history = []
-            for turn in recent:
-                history.extend([
-                    {'role': 'user', 'content': f"[{turn['at']}] {turn['user_speech']}"},
-                    {'role': 'assistant', 'content': turn['assistant_reply']},
-                ])
-            return history, json.dumps(facts, ensure_ascii=False)
+            encoded = json.dumps(facts, ensure_ascii=False)
+            if pinned:
+                diagnostics.update(initiation_pinned=pinned,
+                    supplied_count=sum(len(items) for items in facts.values()),
+                    supplied_estimated_tokens=(len(encoded) + 3) // 4)
+            self.logger.info('Memory retrieval: %s', json.dumps(
+                {'purpose': 'foreground', **diagnostics}, ensure_ascii=False))
+            return self._history(recent), encoded
 
-    def record_turn(self, user_speech, assistant_reply, at=None):
+    def record_turn(self, user_speech, assistant_reply, at=None, *, assistant_lead_in=None):
         _require(_text(user_speech, 20_000) and _text(assistant_reply, 20_000), 'Invalid completed exchange.')
         with self.lock:
             updated = copy.deepcopy(self.recent)
             turn = {'id': updated['next_turn_id'], 'at': at or self.now().isoformat(),
                     'user_speech': user_speech, 'assistant_reply': assistant_reply}
+            if assistant_lead_in is not None:
+                turn['assistant_lead_in'] = copy.deepcopy(assistant_lead_in)
             updated['next_turn_id'] += 1
             updated['turns'].append(turn)
+            self._validate_recent(updated)
             self._trim(updated)
             self._save('recent_conversation.json', updated)
             self.recent = updated
@@ -278,7 +316,8 @@ class MemoryStore:
                 return None
             prior = [t for t in self.recent['turns']
                      if self.memory['context_after_turn'] < t['id'] < (turns[0]['id'] if turns else cursor + 1)][-4:]
-            query = '\n'.join(t['user_speech'] + '\n' + t['assistant_reply'] for t in turns)
+            query = '\n'.join(t.get('assistant_lead_in', {}).get('text', '') + '\n' +
+                              t['user_speech'] + '\n' + t['assistant_reply'] for t in turns)
             selected, diagnostics = retrieve(active, query, prior, token_budget=token_budget)
             self.logger.info('Memory retrieval: %s', json.dumps(
                 {'purpose': 'background', **diagnostics}, ensure_ascii=False))
@@ -327,6 +366,8 @@ class MemoryStore:
                 at = turn['at']
                 details.update(source_kind='new_turn' if ident in turns else 'earlier_context',
                                available_source_texts=[speech])
+                if role == 'assistant' and turn.get('assistant_lead_in'):
+                    details['available_source_texts'].append(turn['assistant_lead_in']['text'])
             else:
                 candidates = [s for s in retained if s['turn_id'] == ident and s['role'] == role]
                 details.update(source_kind='retained_memory',
@@ -342,8 +383,10 @@ class MemoryStore:
                 require(original is not None, 'quote_mismatch',
                         'Evidence quote must be exact user speech or HAL speech from its declared role.')
                 speech, at = original['quote'], original['at']
-            require(quote in speech, 'quote_mismatch',
+            require(any(quote in text for text in details['available_source_texts']), 'quote_mismatch',
                     'Evidence quote must be exact user speech or HAL speech from its declared role.')
+            if turn is not None and role == 'assistant' and quote not in speech:
+                at = turn['assistant_lead_in']['at']
             seen.add((ident, role))
             item = {'turn_id': ident, 'at': at, 'role': role, 'quote': quote}
             if ident not in turns:

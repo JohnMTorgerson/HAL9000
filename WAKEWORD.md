@@ -337,6 +337,14 @@ For persistent recent conversation, personal facts, and topic notes, see
 [MEMORY.md](MEMORY.md). Memory is independently opt-in, uses editable JSON, and
 runs its reasoning updates after replies with decisions in a separate `memory.log`.
 
+## Optional conversation initiation
+
+HAL can occasionally ask whether you have a moment, then use the complete compact
+memory catalogue and recent dialogue to choose an opening in one foreground
+request. This is off by default. See [INITIATION.md](INITIATION.md) for settings,
+call counts, logging, and a manual test command. It uses the existing followup
+window and does not add a session cap.
+
 ## Static API transcription language
 
 With `TRANSCRIPTION_BACKEND=api` and `TRANSCRIPTION_MODE=static`, HAL sends an

@@ -176,10 +176,11 @@ class ConversationMemory:
                        settings.directory, settings.model, settings.reasoning, settings.max_tokens)
         return cls(store, updater, settings, logger, decisions)
 
-    def read_context(self, query=''):
+    def read_context(self, query='', *, pinned_ids=()):
         if not self.available:
             return None
-        history, facts = self.store.recall(query=query, token_budget=self.settings.soft_tokens)
+        options = {'pinned_ids': pinned_ids} if pinned_ids else {}
+        history, facts = self.store.recall(query=query, token_budget=self.settings.soft_tokens, **options)
         # Selection is bounded by a character estimate, never by deleting data.
         # Detailed queries, matching terms, and selected entries stay in memory.log.
         estimated = (len(facts) + 3) // 4
@@ -187,7 +188,13 @@ class ConversationMemory:
                          estimated)
         return history, recall_instructions() + '\n' + facts
 
-    def record_turn(self, user_speech, assistant_reply, at=None):
+    def read_initiation_context(self):
+        if not self.available:
+            return None
+        history, facts, ids = self.store.initiation_context()
+        return history, recall_instructions(complete=True) + '\n' + facts, ids
+
+    def record_turn(self, user_speech, assistant_reply, at=None, *, assistant_lead_in=None):
         if not self.available or self.stopping.is_set():
             return
         if (not isinstance(user_speech, str) or not user_speech.strip()
@@ -195,9 +202,11 @@ class ConversationMemory:
             self.decisions.info('Memory skipped: empty or non-text exchange.')
             return
         try:
-            ident = self.store.record_turn(user_speech, assistant_reply, at)
+            options = {'assistant_lead_in': assistant_lead_in} if assistant_lead_in else {}
+            ident = self.store.record_turn(user_speech, assistant_reply, at, **options)
             self.decisions.info('Queued accepted exchange %s: %s', ident, json.dumps({
                 'user_speech': user_speech, 'assistant_reply': assistant_reply,
+                **options,
             }, ensure_ascii=False))
             self.wake.set()
         except (OSError, ValueError) as exc:

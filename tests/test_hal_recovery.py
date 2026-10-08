@@ -21,6 +21,7 @@ from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
 from live_transcription import TranscriptionError, NoSpeechError
 from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
+from conversation_initiation import InitiationRequest
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
 from image_lookup import IMAGE_MARKER, repair_image_reply
@@ -266,6 +267,7 @@ class MainLoopTests(unittest.TestCase):
             'repair_image_reply': repair_image_reply,
             'SONG_PAUSE_SECONDS': SONG_PAUSE_SECONDS, 'SONG_FAILURE_REPLY': SONG_FAILURE_REPLY,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
+            'initiator': None, 'InitiationRequest': InitiationRequest,
             'explicitly_addresses_hal': explicitly_addresses_hal,
             'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
         })
@@ -275,6 +277,7 @@ class MainLoopTests(unittest.TestCase):
         namespace['images'].context.return_value = ''
         namespace['voice_input'].last_speech_end_at = None
         namespace['handle_api_call'].return_value = 'service result'
+        load_hal_function('speak_reply', namespace)
         return namespace, load_hal_function('run', namespace)
 
     def test_service_failure_reopens_listening_without_stopping_display(self):
