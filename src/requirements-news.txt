@@ -1,0 +1,2 @@
+# Optional article extraction; shared by OpenAI and Ollama news workflows.
+trafilatura>=2.3.1,<3

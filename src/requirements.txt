@@ -2,7 +2,7 @@ annotated-types==0.7.0
 anyio==4.10.0
 certifi==2025.8.3
 cffi==1.17.1
-charset-normalizer==3.4.3
+charset-normalizer>=3.5.2,<4
 coloredlogs==15.0.1
 distro==1.9.0
 filelock==3.19.1
@@ -53,10 +53,13 @@ torch==2.8.0
 tqdm==4.67.1
 typing-inspection==0.4.1
 typing_extensions==4.14.1
-urllib3==2.5.0
+urllib3>=2.8.0,<3
 
 # Local Whisper wake detection (query transcription remains openai-whisper).
 -r requirements-wake.txt
 
 # Image decoding for image lookup and display.
 -r requirements-images.txt
+
+# Read article text from public news pages.
+-r requirements-news.txt

@@ -253,10 +253,10 @@ class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
             'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager', 'display_handler',
-            'play_audio', 'handle_api_call', 'time', 'images')}
+            'play_audio', 'handle_api_call', 'time', 'images', 'news')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
-            'sys': sys, 're': re, 'shlex': shlex, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
+            'sys': sys, 're': re, 'shlex': shlex, 'json': json, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
             'normalize_audio': lambda audio: audio,
             'CommandTooLongError': type('CommandTooLongError', (RuntimeError,), {}),
             'LLMServiceError': LLMServiceError,
@@ -277,6 +277,7 @@ class MainLoopTests(unittest.TestCase):
         namespace['stt'].mode = 'static'
         namespace['llm'].last_refusal = False
         namespace['images'].context.return_value = ''
+        namespace['news'].context.return_value = ''
         namespace['voice_input'].last_speech_end_at = None
         namespace['handle_api_call'].return_value = 'service result'
         load_hal_function('speak_reply', namespace)

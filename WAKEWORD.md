@@ -37,6 +37,9 @@ do not appear in the display pane. No new `.env` setting or dependency is needed
 
 ## Update an existing HAL installation
 
+For the optional news article reader and NFL odds changes, see [NEWS.md](NEWS.md).
+Its incremental dependency command can be used in the Pi's existing environment.
+
 Use the same Python environment that already runs HAL. From the repository
 root, on the Mac or Raspberry Pi:
 

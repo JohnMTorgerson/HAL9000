@@ -175,6 +175,7 @@ class ESPNnflAPI(BaseSportsAPI):
         event_dt_local = event_dt_utc.astimezone(self.local_tz)
 
         return {
+            "event_id": event.get("id"),
             "date": event_dt_local.isoformat(),  # local-aware ISO string
             "home_team": home["team"]["displayName"],
             "away_team": away["team"]["displayName"],
@@ -185,8 +186,56 @@ class ESPNnflAPI(BaseSportsAPI):
             "week": competition.get("week", {}).get("number"),
             "season_type": competition.get("season", {}).get("type"),
             "broadcasts": broadcasts,
+            "odds": self._parse_odds(competition, event.get("id")),
             "links": {
                 "boxscore": next((l["href"] for l in competition.get("links", []) if l["text"] == "Boxscore"), None),
                 "recap": next((l["href"] for l in competition.get("links", []) if l["text"] == "Recap"), None),
             },
         }
+
+    @staticmethod
+    def _parse_odds(competition, event_id):
+        """Keep bookmaker markets; never infer a spread's side from its magnitude."""
+        bookmakers = []
+        raw_odds = competition.get('odds') or []
+        for odds in raw_odds[:4] if isinstance(raw_odds, list) else []:
+            if not isinstance(odds, dict):
+                continue
+            listed, opening = {}, {}
+            for name, sides in (('moneyline', ('home', 'away')),
+                                ('pointSpread', ('home', 'away')),
+                                ('total', ('over', 'under'))):
+                market = odds.get(name) or {}
+                if not isinstance(market, dict):
+                    continue
+                for phase, output in (('close', listed), ('open', opening)):
+                    values = {}
+                    for side in sides:
+                        data = market.get(side) or {}
+                        quote = data.get(phase) if isinstance(data, dict) else None
+                        if isinstance(quote, dict):
+                            kept = {key: quote[key] for key in ('line', 'odds')
+                                    if quote.get(key) is not None}
+                            if kept:
+                                values[side] = kept
+                    if values:
+                        output[name] = values
+            # Older ESPN responses place moneylines directly in team odds.
+            for side in ('home', 'away'):
+                team_odds = odds.get(f'{side}TeamOdds') or {}
+                if isinstance(team_odds, dict) and team_odds.get('moneyLine') is not None:
+                    listed.setdefault('moneyline', {}).setdefault(side, {'odds': team_odds['moneyLine']})
+            if not listed and odds.get('details') is None and odds.get('overUnder') is None:
+                continue
+            provider = odds.get('provider') or {}
+            bookmakers.append({'bookmaker': provider.get('name', 'Unspecified') if isinstance(provider, dict) else 'Unspecified',
+                               'spread_description': odds.get('details'),
+                               'total_points': odds.get('overUnder'),
+                               'listed': listed, 'opening': opening})
+        game_id = str(event_id or '')
+        return {'status': 'available' if bookmakers else 'not_available',
+                'source': 'ESPN',
+                'url': f'https://www.espn.com/nfl/game/_/gameId/{game_id}' if game_id.isdigit() else ESPNnflAPI.BASE_URL,
+                'retrieved_at': datetime.now(timezone.utc).isoformat(),
+                'line_type': 'closing' if competition.get('status', {}).get('type', {}).get('completed') else 'listed',
+                'bookmakers': bookmakers}
