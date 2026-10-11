@@ -27,6 +27,7 @@ from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER
 from image_lookup import IMAGE_MARKER, ImageWorkflow, make_image_provider, repair_image_reply
 from image_history import ImageHistory
 from voice_input import VoiceInput, CommandTooLongError
+from wake_detector import matches_wake
 from audio_capture import AudioOverflowError
 from weather_api import fetch_current_weather, fetch_weather_forecast
 from wolfram_api import fetch_wolfram_answer
@@ -225,6 +226,7 @@ def run():
         try:
             triggered_at = None
             trigger_kind = None
+            verify_wake_transcript = False
             initiation_result = None
             close_after_reply = False
             # Capture continues while the wake detector processes its rolling window.
@@ -269,6 +271,10 @@ def run():
                 followups.close()
                 continue
             audio, fs = captured
+            # Live/local transcription can omit the address. Only verify the
+            # static API path evaluated against recorded wake-triggered requests.
+            verify_wake_transcript = (trigger_kind == 'wakeword' and
+                                      stt.backend == 'api' and stt.mode == 'static')
             capture_ready_at = time.perf_counter()
             speech_ended_at = voice_input.last_speech_end_at
             first_response = True
@@ -301,6 +307,17 @@ def run():
             else:
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
+            if verify_wake_transcript:
+                # Use the unchanged lax matcher, including leading buffered
+                # speech. Run before memory recall, display, or any response LLM.
+                verified = matches_wake(user_input)
+                logger.info('Wake verification %s: final transcript=%r.',
+                            'accepted' if verified else 'rejected (no recognized wake phrase)',
+                            user_input, extra={'speech_role': 'user'})
+                if not verified:
+                    led.off()
+                    followups.close()
+                    continue
             if trigger_kind == 'followup':
                 # Noise can pass the local speech detector. Wait for actual text,
                 # but light the LED before the LLM judges relevance. Keep the
@@ -503,7 +520,11 @@ def run():
 
         except NoSpeechError as exc:
             led.off()
-            if trigger_kind == 'followup':
+            if verify_wake_transcript:
+                followups.close()
+                logger.info('Wake verification rejected: final transcript=[empty transcription].',
+                            extra={'speech_role': 'user'})
+            elif trigger_kind == 'followup':
                 logger.info('FOLLOWUP heard: [empty transcription]', extra={'speech_role': 'user'})
                 remaining_deadline = followups.deadline()
                 if remaining_deadline is not None:

@@ -287,6 +287,7 @@ def test_active_followup_and_wake_commands_take_priority_over_initiation():
 @pytest.mark.parametrize('outcome', ['opening', 'decline', 'ignore', 'silence', 'empty', 'error'])
 def test_main_flow_checks_availability_before_any_llm_and_handles_outcomes(memory, outcome):
     ns, run, clock = followup_tests.MainLoopTests().fixture()
+    ns['stt'].backend = 'api'  # Availability answers need no wake phrase, even with verification enabled.
     ctrl = scheduler(memory, Clock())
     ns['initiator'] = ctrl
     reply = 'What got you interested in singing?' if outcome == 'opening' else 'Another time, then.'
@@ -362,6 +363,7 @@ def test_ignored_availability_answer_keeps_the_original_deadline(memory):
 
 def test_answering_the_opening_returns_to_normal_followups_and_records_engagement(memory):
     ns, run, clock = followup_tests.MainLoopTests().fixture()
+    ns['stt'].backend = 'api'
     ctrl = ns['initiator'] = scheduler(memory, Clock())
     ns['llm'].get_initiation_response.return_value = InitiationDecision(
         'opening', 'What got you interested in singing?', [], 'music', 'Curiosity.')

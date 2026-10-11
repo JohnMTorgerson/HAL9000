@@ -7,6 +7,34 @@ the default: HAL finishes recording before transcribing the complete file,
 using your existing `TRANSCRIPTION_BACKEND=local` or `api` setting.
 Optional live API transcription is described below; updating HAL does not enable it.
 
+## Verify an automatic wake after transcription
+
+With `TRANSCRIPTION_BACKEND=api` and `TRANSCRIPTION_MODE=static`, HAL checks
+the completed transcript before sending a wake-triggered request to the response
+LLM. It reuses the local detector's unchanged, lax matcher: “hey” followed by
+“hal”, “hall”, “hell”, “how”, “al”, or “howl”, ignoring case and punctuation.
+The phrase may occur anywhere in the transcript, allowing buffered speech or
+fillers before the address.
+
+If no recognized wake phrase remains, HAL turns off the LED and returns quietly
+to wake listening. It does not display the rejected transcript, retrieve or
+record conversation memories, request a response, or open a followup window.
+An empty transcription is also a quiet rejection. This check uses the existing
+transcription result: it adds no API request or capture delay.
+
+Spacebar input, ordinary followups, and replies to HAL's availability question
+do not require a wake phrase. Local transcription and live API mode (including
+its optional static fallback) retain their previous behavior; historical samples
+from those paths sometimes omitted the address from legitimate requests.
+
+The main log and terminal now include `Wake transcript:` at INFO once per actual
+local wake, with each detector model's transcript. This evidence is retained even
+when the final transcript is rejected or transcription fails. Unmatched rolling
+scans are not logged at INFO. Static API wakes additionally log
+`Wake verification accepted` or `Wake verification rejected`, along with the
+complete final transcript (or an empty-transcription marker). These INFO records
+do not appear in the display pane. No new `.env` setting or dependency is needed.
+
 ## Update an existing HAL installation
 
 Use the same Python environment that already runs HAL. From the repository
