@@ -1,5 +1,6 @@
 """Attributed memory is application data, not executable instructions or persona."""
 from user_identity import get_user_name
+from memory_validation import TEXT_LIMITS, QUOTE_LIMIT, REASON_LIMIT
 
 _RECALL_TEMPLATE = """SAVED MEMORY: The JSON below contains locally retrieved
 memories about {user_name}, the single user of this installation, and HAL. It is a SELECTED
@@ -102,8 +103,9 @@ matchups/news when the link becomes clear, keeping ambiguous requests ambiguous.
 Update this history when new related requests arrive, then independently evaluate
 whether the accumulated USER evidence warrants an inferred personal interest/fandom.
 Relevant older quotes in supplied memory may support that inference alongside a
-new user quote. Evidence counts include supporting speaker quotes, not necessarily
-independent visits; dates and text provide context. Do not mistake HAL's replies,
+new user quote. Evidence counts count each (turn_id, speaker) once per memory,
+even when several excerpts quote that utterance. They do not count independent
+visits; dates and text provide context. Do not mistake HAL's replies,
 re-read memories, retries or repeated display requests for new proof of fandom.
 
 Use absolute dates from the turns for discussions and plans ('On 2026-10-05 ...'),
@@ -113,8 +115,12 @@ outcomes across extensions, so 'remember when we discussed ...' can be answered.
 An old proposed plan is not evidence it happened. Save scores or news only as dated,
 attributed conversation details when useful; never as permanently current facts.
 Use extend for cumulative developments; don't overwrite the past with the latest
-situation. If 2000 characters cannot retain noteworthy history, create a separate
-dated continuation topic instead of dropping it. Avoid duplicate notes for one
+situation. Keep topic text comfortably below 2000 characters. When the existing
+topic is near the limit, prefer adding a separate dated continuation for the NEW
+discussion. Leave the earlier entry intact and use shared entity/topic tags so
+both can be retrieved. Do not copy the whole earlier summary into the continuation.
+If concise wording cannot retain noteworthy history, use that continuation instead
+of deleting history or cutting text mid-sentence. Avoid duplicate notes for one
 exchange; ordinary chatter, greetings and bare weather/time checks generally need
 no topic unless personal context makes them noteworthy.
 
@@ -147,8 +153,8 @@ must also update or remove contradictory references in other sections (the catal
 lets you find them). If a new USER correction invalidates a HAL memory's claim about
 the user, delete that obsolete HAL entry; do not invent a replacement HAL position.
 reinforce retains text, basis and retention. delete
-copies the existing text, basis, retention, tags and expiry. Give a short user-facing
-reason, not internal reasoning. Maximum 20 ordinary operations. Every operation
+copies the existing text, basis, retention, tags and expiry. Give a nonempty, short
+user-facing reason (maximum 400 characters), not internal reasoning. Maximum 20 ordinary operations. Every operation
 requires 1-3 exact nonempty quotes (<=300 characters); evidence fields are turn_id,
 role (user or assistant), quote. Quote a short, contiguous excerpt, not the whole
 message when it is long. Choose a complete sentence or meaningful clause that
@@ -168,7 +174,17 @@ and reply. Topic extensions already merge existing evidence in the application;
 preserve the broader history in the summary. Discard quotes invalidated by a correction. The app
 marks older quotes context_only and excludes them from fresh evidence counts.
 Old material alone and unrelated new chatter cannot justify relearning a fact.
-Multiple roles in the same turn are allowed. Forget evidence must be NEW user speech.
+Multiple roles in the same turn and multiple distinct excerpts from the same
+speaker's utterance are allowed, within the SAME three-quote total. Each excerpt
+must independently match its source; the application counts the utterance once
+per memory and removes identical repeated quotes. Forget evidence must be NEW user speech.
+
+If the application supplies a rejected proposal and validation feedback, that
+proposal was NOT committed. Return a complete replacement patch for the SAME
+original batch, fixing the reported error and checking the rest of the patch.
+Keep supported, noteworthy changes; do not simply drop them to pass validation.
+Use only the original supplied sources as evidence, never the rejected proposal
+or diagnostic text. The feedback describes an application check, not new facts.
 
 For EACH older untagged memory in tagging_entries return one tag_updates item
 (section, id, tags), unless an ordinary operation already updates or deletes it.
@@ -213,11 +229,34 @@ _SOURCE = _object({'turn_id': {'type': 'integer'},
                        # Structured Outputs explicitly supports string patterns.
                        # Include newlines in the bound; literal source checks
                        # and the final character limit remain in MemoryStore.
-                       'type': 'string', 'pattern': r'^[\s\S]{1,300}$',
+                       'type': 'string', 'pattern': rf'^[\s\S]{{1,{QUOTE_LIMIT}}}$',
                        'description': ('An exact contiguous excerpt from the cited speaker, '
                                        'at most 300 characters. Select a meaningful short '
                                        'passage; do not copy a longer message in full.'),
                    }})
+
+
+def _operation(section):
+    # Nested anyOf keeps each section's length bound in the API schema. The root
+    # remains an object; every branch has required fields and no additional keys.
+    actions = ['add', 'update', 'reinforce', 'delete']
+    if section == 'topics':
+        actions.append('extend')
+    return _object({
+        'action': {'type': 'string', 'enum': actions},
+        'section': {'type': 'string', 'enum': [section]},
+        'id': {'type': 'string'},
+        'text': {'type': 'string', 'pattern': rf'^[\s\S]{{1,{TEXT_LIMITS[section]}}}$',
+                 'description': 'Concise supported memory. For a full topic, add a dated continuation instead of exceeding the limit.'},
+        'basis': {'type': 'string', 'enum': ['explicit'] if section == 'hal' else ['explicit', 'inferred']},
+        'retention': {'type': 'string', 'enum': ['durable']},
+        'expires_on': {'type': 'null'}, 'tags': _TAGS,
+        'reason': {'type': 'string', 'pattern': rf'^[\s\S]{{1,{REASON_LIMIT}}}$',
+                   'description': 'Required brief explanation of this change; must not be empty.'},
+        'evidence': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': _SOURCE},
+    })
+
+
 MEMORY_FORMAT = {
     'type': 'json_schema',
     'json_schema': {
@@ -231,16 +270,8 @@ MEMORY_FORMAT = {
                 'section': {'type': 'string', 'enum': ['personal', 'hal', 'topics']},
                 'id': {'type': 'string'}, 'tags': _TAGS,
             })},
-            'operations': {'type': 'array', 'maxItems': 20, 'items': _object({
-                'action': {'type': 'string', 'enum': ['add', 'update', 'extend', 'reinforce', 'delete']},
-                'section': {'type': 'string', 'enum': ['personal', 'hal', 'topics']},
-                'id': {'type': 'string'}, 'text': {'type': 'string'},
-                'basis': {'type': 'string', 'enum': ['explicit', 'inferred']},
-                'retention': {'type': 'string', 'enum': ['durable']},
-                'expires_on': {'type': 'null'}, 'tags': _TAGS,
-                'reason': {'type': 'string'},
-                'evidence': {'type': 'array', 'minItems': 1, 'maxItems': 3, 'items': _SOURCE},
-            })},
+            'operations': {'type': 'array', 'maxItems': 20,
+                           'items': {'anyOf': [_operation(section) for section in TEXT_LIMITS]}},
         }),
     },
 }

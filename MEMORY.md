@@ -148,12 +148,16 @@ Each evidence quote is limited to 300 characters in both the API output schema
 and local validation. For a longer message, the updater must choose a short,
 exact, contiguous excerpt that preserves relevant qualifications; fuller discussion
 details belong in the summary. HAL does not truncate or rewrite evidence to make
-a rejected patch pass, and this adds no extra API calls.
-Each operation also has a schema-enforced total of 1–3 evidence sources, counting
+a rejected patch pass. Every excerpt is checked independently, including multiple
+excerpts from the same speaker in one turn. Identical repeated quotes are removed.
+Each operation also has a schema-enforced total of 1–3 evidence quotes, counting
 older context and new quotes together. Topic extensions merge retained evidence;
 the updater should select useful sources rather than recopy every earlier turn.
 The schema also bounds operations/tag updates and search tags to their existing
-local limits. Source attribution and exact-quote checks still run locally.
+local limits. Section-specific schema branches limit personal/HAL text to 800
+characters and topics to 2000. A change reason is required and limited to 400
+characters. These bounds share constants with local validation. Source attribution,
+exact quotes, non-whitespace text and other consistency checks still run locally.
 Older quotes are marked `context_only: true` and do not increase fresh evidence
 counts or evidence dates. Old context alone cannot create or reinforce a memory,
 and forget requests still require new user speech. Tag-only enrichment uses the existing record as its source and
@@ -173,8 +177,9 @@ Retries, work/research, rival teams and asking for somebody else need considerat
 The `extend` action rewrites a topic's cumulative summary while preserving earlier
 evidence counts/dates and merging supporting quotes. `reinforce` requires unchanged
 text/basis/retention. `update` is for corrections/replacements and resets supporting
-evidence. Evidence counts count cited fresh speaker sources, not necessarily unique
-visits: a user and assistant quote in one exchange count twice. The model must use
+evidence. Evidence counts count each fresh (turn ID, speaker) once per memory,
+even when several excerpts quote that utterance. They do not count unique visits:
+a user and assistant quote in one exchange count twice. The model must use
 the actual user evidence and dates rather than treating that counter as a fandom
 score. Quotes are bounded to three per entry, and evidence dates to the latest 12;
 dated summaries carry the broader history. Older cited quotes are context, not new
@@ -259,9 +264,19 @@ HAL can continue answering and recording completed turns during a slow update.
 There is a small local save after playback, but no foreground wait for reasoning.
 New information remains in recent conversation while the background job catches up.
 
-API failures leave existing memory and pending exchanges intact. The next
-completed exchange or next startup triggers another attempt; there is no timed
-retry loop. File/disk failures are logged and normal HAL conversation can continue.
+An invalid memory proposal is rejected in full before any write. The worker then
+makes **one correction request** using the same original batch, the rejected
+proposal, and its exact validation error. The model must return a complete
+replacement patch, still subject to every validation check. Near the topic limit,
+it is encouraged to add a dated continuation with shared tags and preserve the
+earlier entry. The application never silently truncates summaries or evidence.
+
+A valid first proposal still needs only one background request. A validation
+failure can add at most one immediate request for that batch. If correction also
+fails, existing memory and pending exchanges remain intact; the next completed
+exchange or next startup can try again. There is no timed retry loop. API errors,
+refusals, incomplete output, and file/disk/state failures do not trigger a model
+correction. File/disk failures are logged and normal HAL conversation can continue.
 Shutdown waits at most one second for the worker; pending work resumes later.
 Updating memory and marking its input processed is one atomic write, so a crash
 between that write and recent-history cleanup cannot apply a change twice.
@@ -307,6 +322,12 @@ and does not get pushed to HAL's display. It records:
   text. Empty/invalid quotes, overlong quotes, literal mismatches, incorrect roles,
   unavailable sources and missing new evidence have distinct check names. These
   diagnostics describe the first failed check; the entire patch remains rejected.
+- Summary/reason failures identify the operation, field, actual length and allowed
+  length (or empty/non-text value), for example `Topic text has 2164 characters;
+  maximum is 2000.` The same diagnostic is sent to the model for correction.
+- Initial/correction attempt numbers, the two-attempt limit, both rejected proposals
+  if necessary, and whether correction succeeded. Rejected text is never evidence
+  for a subsequent proposal.
 
 These are concise explanations of decisions, not the model's private reasoning.
 The main HAL log/terminal gets a brief retrieval-size, completion, or failure
@@ -321,9 +342,10 @@ file rotates at approximately 2 MB, keeping three previous files (`memory.log.1`
 through `.3`). Inspect it with `tail -f /your/LOG_PATH/memory.log`, substituting
 your existing log directory.
 
-Brief memory warnings/errors also appear in the transcript pane, yellow/red
-respectively. The detailed rejected proposal and source comparisons stay in
-`memory.log`; no validation rule or automatic retry behavior is changed.
+The first rejection and correction attempt are INFO messages in the main log.
+If the correction fails, the brief warning also appears in the transcript pane
+in yellow; errors remain red. Detailed proposals and source comparisons stay in
+`memory.log`. A successful correction produces its normal colored change summary.
 
 ## Validation
 

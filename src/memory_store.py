@@ -11,16 +11,15 @@ import threading
 import uuid
 
 from memory_retrieval import compact_entry, retrieve
+from memory_validation import (MemoryValidationError, TEXT_LIMITS, QUOTE_LIMIT,
+                               REASON_LIMIT, patch_validation, validate_text)
 
 SECTIONS = ('personal', 'hal', 'topics')
 TAG_BATCH_SIZE = 20
 
 
-class EvidenceValidationError(ValueError):
-    """An unchanged rejection rule plus details for the separate memory log."""
-    def __init__(self, message, details):
-        super().__init__(message)
-        self.details = details
+class EvidenceValidationError(MemoryValidationError):
+    """A proposal's evidence failed a source, role, or exact-quote check."""
 
 
 def _require(condition, message):
@@ -182,7 +181,7 @@ class MemoryStore:
                 _require(isinstance(item, dict) and _text(item.get('id'), 80)
                          and item['id'] not in ids, 'Invalid or duplicate memory id.')
                 ids.add(item['id'])
-                _require(_text(item.get('text'), 2000 if section == 'topics' else 800),
+                _require(_text(item.get('text'), TEXT_LIMITS[section]),
                          'Memory text exceeds the section limit.')
                 _require(item.get('basis') in ('explicit', 'inferred'), 'Invalid memory basis.')
                 _require(section != 'hal' or item['basis'] == 'explicit', 'HAL views need explicit evidence.')
@@ -201,7 +200,7 @@ class MemoryStore:
                 for source in item['evidence']:
                     _require(isinstance(source, dict) and type(source.get('turn_id')) is int
                              and source.get('role') in ('user', 'assistant')
-                             and _text(source.get('quote'), 300), 'Invalid memory source.')
+                             and _text(source.get('quote'), QUOTE_LIMIT), 'Invalid memory source.')
                     _require(section != 'personal' or source['role'] == 'user',
                              'Personal memory evidence must come from the user.')
                     _require(section != 'hal' or source['role'] == 'assistant',
@@ -354,10 +353,9 @@ class MemoryStore:
                     'source_fields', 'Invalid source fields.')
             ident, quote, role = source['turn_id'], source['quote'], source['role']
             details.update(quote_length=len(quote) if isinstance(quote, str) else None,
-                           max_quote_length=300)
+                           max_quote_length=QUOTE_LIMIT)
             require(role in roles, 'source_role', 'Evidence role is not allowed for this memory change.')
             require(type(ident) is int, 'turn_id_type', 'Evidence turn ID must be an integer.')
-            require((ident, role) not in seen, 'duplicate_source', 'Evidence must cite distinct speaker sources.')
             turn = turns.get(ident) or context.get(ident)
             original = None
             if turn is not None:
@@ -376,8 +374,8 @@ class MemoryStore:
                         'Evidence must cite NEW accepted turns or supplied supporting context.')
             require(isinstance(quote, str), 'quote_type', 'Evidence quote must be text.')
             require(bool(quote.strip()), 'quote_empty', 'Evidence quote must not be empty or whitespace.')
-            require(len(quote) <= 300, 'quote_length',
-                    f'Evidence quote has {len(quote)} characters; maximum is 300.')
+            require(len(quote) <= QUOTE_LIMIT, 'quote_length',
+                    f'Evidence quote has {len(quote)} characters; maximum is {QUOTE_LIMIT}.')
             if turn is None:
                 original = next((s for s in candidates if quote in s['quote']), None)
                 require(original is not None, 'quote_mismatch',
@@ -387,7 +385,12 @@ class MemoryStore:
                     'Evidence quote must be exact user speech or HAL speech from its declared role.')
             if turn is not None and role == 'assistant' and quote not in speech:
                 at = turn['assistant_lead_in']['at']
-            seen.add((ident, role))
+            # Validate every excerpt, even if another quote cited this speaker.
+            # Keep distinct excerpts; exact duplicates add neither text nor weight.
+            key = (ident, role, quote)
+            if key in seen:
+                continue
+            seen.add(key)
             item = {'turn_id': ident, 'at': at, 'role': role, 'quote': quote}
             if ident not in turns:
                 item['context_only'] = True
@@ -397,134 +400,155 @@ class MemoryStore:
                 'Each change requires evidence from a NEW accepted turn; context cannot reinforce itself.')
         return result
 
+    def _prepare_patch(self, batch, changes, scope):
+        """Validate a complete proposal against a copy; caller holds the lock."""
+        _require(isinstance(changes, dict) and set(changes) == {
+            'forget', 'forget_ids', 'forget_evidence', 'tag_updates', 'operations'}
+            and type(changes['forget']) is bool and isinstance(changes['operations'], list)
+            and len(changes['operations']) <= 20 and isinstance(changes['tag_updates'], list)
+            and len(changes['tag_updates']) <= TAG_BATCH_SIZE, 'Invalid memory changes.')
+        turns = {t['id']: t for t in batch['new_turns']}
+        forget = changes['forget']
+        forget_ids = changes['forget_ids']
+        _require(isinstance(forget_ids, list) and all(isinstance(i, str) for i in forget_ids)
+                 and len(set(forget_ids)) == len(forget_ids), 'Invalid forget IDs.')
+        forgotten_sources = []
+        if forget:
+            forgotten_sources = self._evidence(changes['forget_evidence'], turns,
+                                              operation={'action': 'forget', 'ids': forget_ids})
+            _require(not changes['operations'] and not changes['tag_updates'],
+                     'Forget batches only use forget_ids; no other mutations.')
+        else:
+            _require(not forget_ids and changes['forget_evidence'] == [], 'Unexpected forget evidence/IDs.')
+        _require(bool(turns) or (not changes['operations'] and not forget),
+                 'Tag-only batches cannot change facts or forget.')
+        updated, events, touched = copy.deepcopy(self.memory), [], set()
+        catalogue_ids = {item['id'] for items in batch['catalogue'].values() for item in items}
+        # An inferred personal interest can cite older USER quotes from a
+        # retrieved topic. Never expose arbitrary archive evidence or bypass
+        # the per-section role checks / requirement for a relevant new turn.
+        supplied_sources = [s for items in batch['memory'].values()
+                            for item in items for s in item['evidence']
+                            if s['turn_id'] > self.memory['context_after_turn']]
+        _require(set(forget_ids) <= catalogue_ids, 'Unknown forgotten memory ID.')
+        for section in SECTIONS:
+            for item in list(updated[section]):
+                if item['id'] in forget_ids:
+                    updated[section].remove(item)
+                    touched.add(item['id'])
+                    events.append({'action': 'delete', 'section': section, 'before': item,
+                                   'after': None, 'reason': 'Explicit request to forget.',
+                                   'evidence': forgotten_sources})
+        for index, op in enumerate(changes['operations']):
+            scope.clear()
+            scope.update(check='operation_fields', operation={'index': index + 1,
+                **({key: op.get(key) for key in ('action', 'section', 'id')} if isinstance(op, dict) else {})})
+            _require(isinstance(op, dict) and set(op) == {
+                'action', 'section', 'id', 'text', 'basis', 'retention', 'tags',
+                'expires_on', 'reason', 'evidence'}, 'Invalid operation fields.')
+            action, section, ident = op['action'], op['section'], op['id']
+            _require(action in ('add', 'update', 'extend', 'reinforce', 'delete') and
+                     section in SECTIONS and isinstance(ident, str), 'Invalid operation.')
+            _require(action != 'extend' or section == 'topics',
+                     'Only discussion topics can be extended.')
+            validate_text(op['text'], limit=TEXT_LIMITS[section], field='text',
+                          label='Topic text' if section == 'topics' else 'Memory text',
+                          operation=scope['operation'])
+            validate_text(op['reason'], limit=REASON_LIMIT, field='reason',
+                          label='Change reason', operation=scope['operation'])
+            scope['check'] = 'operation_basis'
+            _require(op['basis'] in ('explicit', 'inferred'), 'Memory basis must be explicit or inferred.')
+            scope['check'] = 'operation'
+            _require(section != 'hal' or op['basis'] == 'explicit', 'HAL views need explicit evidence.')
+            roles = (('user',) if section == 'personal' else ('assistant',)
+                     if section == 'hal' and action != 'delete' else ('user', 'assistant'))
+            sources = self._evidence(op['evidence'], turns, roles=roles,
+                earlier=batch['earlier_context'], retained=supplied_sources,
+                operation={'index': index + 1, 'action': action, 'section': section, 'id': ident})
+            fresh = [s for s in sources if not s.get('context_only', False)]
+            _retention(op, section)
+            tags = _tags(op['tags'], allow_empty=action == 'delete')
+            existing = next((i for i in updated[section] if i['id'] == ident), None)
+            if action == 'add':
+                _require(ident == '', 'New memories cannot choose their own id.')
+                _require(not any(i['text'].casefold() == op['text'].casefold()
+                                 for i in updated[section]), 'Duplicate memory; update the existing entry.')
+            else:
+                _require(existing is not None and ident in catalogue_ids and ident not in touched,
+                         'Unknown or repeated memory id.')
+                touched.add(ident)
+            before = copy.deepcopy(existing)
+            if action == 'delete':
+                updated[section].remove(existing)
+                after = None
+            else:
+                if action == 'reinforce':
+                    _require(op['text'] == existing['text'] and op['basis'] == existing['basis']
+                             and op['retention'] == existing['retention'],
+                             'Reinforcement cannot rewrite a fact or retention.')
+                at = self.now().isoformat()
+                if existing is None:
+                    existing = {'id': 'm_' + uuid.uuid4().hex[:12], 'created_at': at,
+                                'evidence_count': 0, 'evidence_dates': [], 'evidence': []}
+                    updated[section].append(existing)
+                existing.update(text=op['text'], basis=op['basis'], expires_on=op['expires_on'],
+                                retention=op['retention'], tags=tags, updated_at=at)
+                if action == 'update':
+                    existing['evidence_count'] = 0
+                    existing['evidence_dates'] = []
+                existing['evidence_count'] += len({(s['turn_id'], s['role']) for s in fresh})
+                dates = existing['evidence_dates'] + [s['at'][:10] for s in fresh]
+                existing['evidence_dates'] = sorted(set(dates))[-12:]
+                evidence = [] if action == 'update' else existing['evidence']
+                # A re-cited old quote replaces its prior representation,
+                # without duplicating or counting it as new corroboration.
+                cited = {(s['turn_id'], s['role']) for s in sources}
+                evidence = [s for s in evidence if (s['turn_id'], s['role']) not in cited]
+                existing['evidence'] = (evidence + sources)[-3:]
+                after = copy.deepcopy(existing)
+            events.append({'action': action, 'section': section, 'before': before,
+                           'after': after, 'reason': op['reason'], 'evidence': sources})
+
+        scope.clear()
+        scope.update(check='tag_updates')
+        expected_tags = {(i['section'], i['id']) for i in batch['tagging_entries']}
+        indexed = set()
+        for tagging in changes['tag_updates']:
+            _require(isinstance(tagging, dict) and set(tagging) == {'section', 'id', 'tags'},
+                     'Invalid tag update fields.')
+            section, ident = tagging['section'], tagging['id']
+            _require(isinstance(section, str) and isinstance(ident, str), 'Invalid tag update target.')
+            key = (section, ident)
+            _require(key in expected_tags and key not in indexed and ident not in touched,
+                     'Unknown or repeated indexing target.')
+            item = next((i for i in updated[section] if i['id'] == ident), None)
+            _require(item is not None and not item['tags'], 'Stale tag-only update.')
+            before = copy.deepcopy(item)
+            item['tags'] = _tags(tagging['tags'])
+            indexed.add(key)
+            events.append({'action': 'tag', 'section': section, 'before': before,
+                           'after': copy.deepcopy(item), 'reason': 'Indexed existing memory; facts unchanged.'})
+        if not forget:
+            _require(all(key in indexed or key[1] in touched for key in expected_tags),
+                     'Every pending indexing entry must receive tags or be updated/deleted.')
+        if turns:
+            updated['last_processed_turn'] = batch['new_turns'][-1]['id']
+        if forget:
+            updated['context_after_turn'] = updated['last_processed_turn']
+        scope.clear()
+        scope.update(check='resulting_memory')
+        self._validate_memory(updated)
+        return updated, events, forgotten_sources
+
     def apply(self, batch, changes):
         """Validate the whole patch before committing entries, tags or queue cursor."""
         with self.lock:
             _require(batch['cursor'] == self.memory['last_processed_turn'], 'Stale memory update.')
-            _require(isinstance(changes, dict) and set(changes) == {
-                'forget', 'forget_ids', 'forget_evidence', 'tag_updates', 'operations'}
-                and type(changes['forget']) is bool and isinstance(changes['operations'], list)
-                and len(changes['operations']) <= 20 and isinstance(changes['tag_updates'], list)
-                and len(changes['tag_updates']) <= TAG_BATCH_SIZE, 'Invalid memory changes.')
-            turns = {t['id']: t for t in batch['new_turns']}
+            scope = {'check': 'patch_structure'}
+            with patch_validation(scope):
+                updated, events, forgotten_sources = self._prepare_patch(batch, changes, scope)
+            # Storage/state failures must never be sent to the model for repair.
             forget = changes['forget']
-            forget_ids = changes['forget_ids']
-            _require(isinstance(forget_ids, list) and all(isinstance(i, str) for i in forget_ids)
-                     and len(set(forget_ids)) == len(forget_ids), 'Invalid forget IDs.')
-            forgotten_sources = []
-            if forget:
-                forgotten_sources = self._evidence(changes['forget_evidence'], turns,
-                                                  operation={'action': 'forget', 'ids': forget_ids})
-                _require(not changes['operations'] and not changes['tag_updates'],
-                         'Forget batches only use forget_ids; no other mutations.')
-            else:
-                _require(not forget_ids and changes['forget_evidence'] == [], 'Unexpected forget evidence/IDs.')
-            _require(bool(turns) or (not changes['operations'] and not forget),
-                     'Tag-only batches cannot change facts or forget.')
-            updated, events, touched = copy.deepcopy(self.memory), [], set()
-            catalogue_ids = {item['id'] for items in batch['catalogue'].values() for item in items}
-            # An inferred personal interest can cite older USER quotes from a
-            # retrieved topic. Never expose arbitrary archive evidence or bypass
-            # the per-section role checks / requirement for a relevant new turn.
-            supplied_sources = [s for items in batch['memory'].values()
-                                for item in items for s in item['evidence']
-                                if s['turn_id'] > self.memory['context_after_turn']]
-            _require(set(forget_ids) <= catalogue_ids, 'Unknown forgotten memory ID.')
-            for section in SECTIONS:
-                for item in list(updated[section]):
-                    if item['id'] in forget_ids:
-                        updated[section].remove(item)
-                        touched.add(item['id'])
-                        events.append({'action': 'delete', 'section': section, 'before': item,
-                                       'after': None, 'reason': 'Explicit request to forget.',
-                                       'evidence': forgotten_sources})
-            for index, op in enumerate(changes['operations']):
-                _require(isinstance(op, dict) and set(op) == {
-                    'action', 'section', 'id', 'text', 'basis', 'retention', 'tags',
-                    'expires_on', 'reason', 'evidence'}, 'Invalid operation fields.')
-                action, section, ident = op['action'], op['section'], op['id']
-                _require(action in ('add', 'update', 'extend', 'reinforce', 'delete') and
-                         section in SECTIONS and isinstance(ident, str), 'Invalid operation.')
-                _require(action != 'extend' or section == 'topics',
-                         'Only discussion topics can be extended.')
-                _require(_text(op['text'], 2000 if section == 'topics' else 800)
-                         and _text(op['reason'], 400) and op['basis'] in ('explicit', 'inferred'),
-                         'Invalid operation text or basis.')
-                _require(section != 'hal' or op['basis'] == 'explicit', 'HAL views need explicit evidence.')
-                roles = (('user',) if section == 'personal' else ('assistant',)
-                         if section == 'hal' and action != 'delete' else ('user', 'assistant'))
-                sources = self._evidence(op['evidence'], turns, roles=roles,
-                    earlier=batch['earlier_context'], retained=supplied_sources,
-                    operation={'index': index + 1, 'action': action, 'section': section, 'id': ident})
-                fresh = [s for s in sources if not s.get('context_only', False)]
-                _retention(op, section)
-                tags = _tags(op['tags'], allow_empty=action == 'delete')
-                existing = next((i for i in updated[section] if i['id'] == ident), None)
-                if action == 'add':
-                    _require(ident == '', 'New memories cannot choose their own id.')
-                    _require(not any(i['text'].casefold() == op['text'].casefold()
-                                     for i in updated[section]), 'Duplicate memory; update the existing entry.')
-                else:
-                    _require(existing is not None and ident in catalogue_ids and ident not in touched,
-                             'Unknown or repeated memory id.')
-                    touched.add(ident)
-                before = copy.deepcopy(existing)
-                if action == 'delete':
-                    updated[section].remove(existing)
-                    after = None
-                else:
-                    if action == 'reinforce':
-                        _require(op['text'] == existing['text'] and op['basis'] == existing['basis']
-                                 and op['retention'] == existing['retention'],
-                                 'Reinforcement cannot rewrite a fact or retention.')
-                    at = self.now().isoformat()
-                    if existing is None:
-                        existing = {'id': 'm_' + uuid.uuid4().hex[:12], 'created_at': at,
-                                    'evidence_count': 0, 'evidence_dates': [], 'evidence': []}
-                        updated[section].append(existing)
-                    existing.update(text=op['text'], basis=op['basis'], expires_on=op['expires_on'],
-                                    retention=op['retention'], tags=tags, updated_at=at)
-                    if action == 'update':
-                        existing['evidence_count'] = 0
-                        existing['evidence_dates'] = []
-                    existing['evidence_count'] += len(fresh)
-                    dates = existing['evidence_dates'] + [s['at'][:10] for s in fresh]
-                    existing['evidence_dates'] = sorted(set(dates))[-12:]
-                    evidence = [] if action == 'update' else existing['evidence']
-                    # A re-cited old quote replaces its prior representation,
-                    # without duplicating or counting it as new corroboration.
-                    cited = {(s['turn_id'], s['role']) for s in sources}
-                    evidence = [s for s in evidence if (s['turn_id'], s['role']) not in cited]
-                    existing['evidence'] = (evidence + sources)[-3:]
-                    after = copy.deepcopy(existing)
-                events.append({'action': action, 'section': section, 'before': before,
-                               'after': after, 'reason': op['reason'], 'evidence': sources})
-
-            expected_tags = {(i['section'], i['id']) for i in batch['tagging_entries']}
-            indexed = set()
-            for tagging in changes['tag_updates']:
-                _require(isinstance(tagging, dict) and set(tagging) == {'section', 'id', 'tags'},
-                         'Invalid tag update fields.')
-                section, ident = tagging['section'], tagging['id']
-                _require(isinstance(section, str) and isinstance(ident, str), 'Invalid tag update target.')
-                key = (section, ident)
-                _require(key in expected_tags and key not in indexed and ident not in touched,
-                         'Unknown or repeated indexing target.')
-                item = next((i for i in updated[section] if i['id'] == ident), None)
-                _require(item is not None and not item['tags'], 'Stale tag-only update.')
-                before = copy.deepcopy(item)
-                item['tags'] = _tags(tagging['tags'])
-                indexed.add(key)
-                events.append({'action': 'tag', 'section': section, 'before': before,
-                               'after': copy.deepcopy(item), 'reason': 'Indexed existing memory; facts unchanged.'})
-            if not forget:
-                _require(all(key in indexed or key[1] in touched for key in expected_tags),
-                         'Every pending indexing entry must receive tags or be updated/deleted.')
-            if turns:
-                updated['last_processed_turn'] = batch['new_turns'][-1]['id']
-            if forget:
-                updated['context_after_turn'] = updated['last_processed_turn']
-            self._validate_memory(updated)
             # Entries and cursor commit together. Tagging never advances the
             # dialogue cursor or creates reinforcement from old material.
             self._save('memory.json', updated)

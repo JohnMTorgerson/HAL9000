@@ -16,6 +16,7 @@ except ImportError:
     OpenAI = None
 from memory_prompts import MEMORY_FORMAT, recall_instructions, update_instructions
 from memory_store import MemoryStore
+from memory_validation import MemoryValidationError
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -106,14 +107,26 @@ class MemoryUpdater:
             raise ValueError('Persistent memory requires the OpenAI Python package.')
         self.client = OpenAI(api_key=api_key, max_retries=0, timeout=settings.timeout)
 
-    def update(self, batch):
+    def update(self, batch, *, correction=None):
         settings = self.settings
+        messages = [{'role': 'system', 'content': update_instructions()},
+                    {'role': 'user', 'content': json.dumps(batch, ensure_ascii=False)}]
+        if correction is not None:
+            messages.extend([
+                {'role': 'assistant', 'content': json.dumps(correction['proposed_changes'], ensure_ascii=False)},
+                {'role': 'user', 'content': json.dumps({
+                    'application_validation_error': {
+                        'reason': correction['reason'], 'validation': correction['validation']},
+                    'instruction': 'The proposal was rejected in full. Correct it and return a complete replacement '
+                                   'patch for the original batch. Preserve supported changes and use a dated '
+                                   'continuation topic if needed. The original evidence rules still apply.',
+                }, ensure_ascii=False)},
+            ])
         response = self.client.chat.completions.create(
             model=settings.model, reasoning_effort=settings.reasoning,
             max_completion_tokens=settings.max_tokens, service_tier='default',
             response_format=MEMORY_FORMAT,
-            messages=[{'role': 'system', 'content': update_instructions()},
-                      {'role': 'user', 'content': json.dumps(batch, ensure_ascii=False)}],
+            messages=messages,
         )
         usage = getattr(response, 'usage', None)
         self.logger.info('Memory API usage: %s',
@@ -220,6 +233,60 @@ class ConversationMemory:
                           'Inspect memory.log and the JSON files before restarting.', type(exc).__name__)
         self.decisions.error('Memory storage error: %s: %s', type(exc).__name__, str(exc))
 
+    def _process_batch(self, batch):
+        """Try one proposal and at most one correction, outside storage locks."""
+        correction = None
+        for attempt in (1, 2):
+            if self.stopping.is_set():
+                return None
+            try:
+                changes = (self.updater.update(batch) if correction is None else
+                           self.updater.update(batch, correction=correction))
+            except Exception as exc:
+                # API errors, refusals and incomplete responses are not proposals
+                # to repair. Pending work resumes on a later exchange/startup.
+                self.decisions.error('Memory API/decision failure: attempt=%s; type=%s status=%s code=%s. '
+                                     'Pending exchanges retained; no immediate retry.',
+                                     attempt, type(exc).__name__, getattr(exc, 'status_code', None),
+                                     getattr(exc, 'code', None))
+                if isinstance(exc, ValueError):
+                    self.decisions.error('%s', exc)
+                elif getattr(exc, 'status_code', None) in (400, 403, 404):
+                    self.decisions.error('Check MEMORY_MODEL access, MEMORY_REASONING_EFFORT, '
+                                         'and structured-output support for that model.')
+                elif getattr(exc, 'status_code', None) in (401, 429):
+                    self.decisions.error('Check API credentials, credits, and usage/rate limits.')
+                self.logger.warning('Background memory update failed; response unaffected. See memory.log.')
+                return None
+            if self.stopping.is_set():
+                return None
+            try:
+                count = self.store.apply(batch, changes)
+            except MemoryValidationError as exc:
+                correction = {'reason': str(exc), 'validation': exc.details, 'proposed_changes': changes}
+                self.decisions.error('Rejected memory patch: %s Existing memories retained.', exc)
+                self.decisions.error('Rejected memory patch details: %s', json.dumps({
+                    'previous_cursor': batch['cursor'],
+                    'new_turn_ids': [t['id'] for t in batch['new_turns']],
+                    'attempt': attempt, 'max_attempts': 2, **correction,
+                }, ensure_ascii=False))
+                if attempt == 1:
+                    self.logger.info('Background memory: rejected proposal; requesting one correction. Details in memory.log.')
+                    self.decisions.info('Memory correction requested: attempt=2/2; check=%s.',
+                                        exc.details.get('check'))
+                    continue
+                self.logger.warning('Background memory patch rejected; see memory.log. Pending exchanges retained.')
+                return None
+            except (OSError, ValueError) as exc:
+                # Includes stale cursors and outside file edits. These are not
+                # model mistakes, and may follow a successful atomic write.
+                self._storage_failed(exc)
+                return None
+            if correction is not None:
+                self.decisions.info('Memory correction succeeded: attempt=2/2; changes=%s.', count)
+                self.logger.info('Background memory correction succeeded; details in memory.log.')
+            return count, changes
+
     def _run(self):
         try:
             while not self.stopping.is_set():
@@ -231,44 +298,11 @@ class ConversationMemory:
                     self.decisions.info('Memory update started: turns=%s tagging_entries=%s previous_cursor=%s.',
                                         [t['id'] for t in batch['new_turns']],
                                         len(batch.get('tagging_entries', [])), batch['cursor'])
-                    try:
-                        changes = self.updater.update(batch)
-                    except Exception as exc:
-                        # No automatic retry loop: queued work is retained. Try
-                        # again on a later completed exchange or next startup.
-                        self.decisions.error('Memory API/decision failure: type=%s status=%s code=%s. '
-                                             'Pending exchanges retained; no immediate retry.',
-                                             type(exc).__name__, getattr(exc, 'status_code', None),
-                                             getattr(exc, 'code', None))
-                        if isinstance(exc, ValueError):
-                            self.decisions.error('%s', exc)
-                        elif getattr(exc, 'status_code', None) in (400, 403, 404):
-                            self.decisions.error('Check MEMORY_MODEL access, MEMORY_REASONING_EFFORT, '
-                                                 'and structured-output support for that model.')
-                        elif getattr(exc, 'status_code', None) in (401, 429):
-                            self.decisions.error('Check API credentials, credits, and usage/rate limits.')
-                        self.logger.warning('Background memory update failed; response unaffected. See memory.log.')
+                    result = self._process_batch(batch)
+                    if result is None:
                         self.wake.clear()
                         break
-                    if self.stopping.is_set():
-                        break
-                    try:
-                        count = self.store.apply(batch, changes)
-                    except OSError as exc:
-                        self._storage_failed(exc)
-                        break
-                    except ValueError as exc:
-                        self.decisions.error('Rejected memory patch: %s. Existing memories retained.', exc)
-                        self.decisions.error('Rejected memory patch details: %s', json.dumps({
-                            'previous_cursor': batch['cursor'],
-                            'new_turn_ids': [t['id'] for t in batch['new_turns']],
-                            'reason': str(exc),
-                            'validation': getattr(exc, 'details', None),
-                            'proposed_changes': changes,
-                        }, ensure_ascii=False))
-                        self.logger.warning('Background memory patch rejected; see memory.log. Pending exchanges retained.')
-                        self.wake.clear()
-                        break
+                    count, changes = result
                     elapsed = time.perf_counter() - started
                     self.decisions.info('Memory update finished: %.3fs; %s changes.', elapsed, count)
                     if count:

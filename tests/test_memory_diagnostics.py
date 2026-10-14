@@ -54,7 +54,11 @@ def test_rejected_proposal_logs_exact_check_sources_and_preserves_pending_turn(
             assert '301 characters; maximum is 300' in details['reason']
         assert all((tmp_path / name).read_bytes() == data for name, data in before.items())
         assert store.next_batch()['new_turns'][0]['id'] == turn['id']
-        updater.update.assert_called_once()
+        assert updater.update.call_count == 2  # One bounded correction, then pause.
+        feedback = updater.update.call_args.kwargs['correction']
+        assert feedback['validation'] == validation
+        assert feedback['proposed_changes'] == proposal
+        assert feedback['reason'] == details['reason']
         main.warning.assert_called_once_with(
             'Background memory patch rejected; see memory.log. Pending exchanges retained.')
     finally:
