@@ -51,8 +51,8 @@ class AuthTests(unittest.TestCase):
     def test_sms_2fa_exception_from_real_validator_can_retry(self):
         response = Response()
         response.status_code = 421
-        # Exercise the exact SDK path from the Pi traceback: this exception is
-        # not swallowed by pyicloud's APIResponseException handler.
+        # Exercise the SDK path from the Pi traceback. Current pyicloud catches
+        # this exception and returns False; older versions let HAL catch it.
         error = PyiCloud2FARequiredException('fixture@example.invalid', response)
         self.api._validate_sms_code.side_effect = [error, None]
         self.api.validate_2fa_code.side_effect = lambda code: PyiCloudService.validate_2fa_code(self.api, code)
@@ -61,7 +61,9 @@ class AuthTests(unittest.TestCase):
         self.api.request_2fa_code.assert_called_once_with()
         self.assertEqual(self.api._validate_sms_code.call_args_list, [call('123456'), call('654321')])
         self.assertTrue(all('SMS code' in args.args[0] for args in prompts.call_args_list))
-        self.assertIn('PyiCloud2FARequiredException', output)
+        self.assertIn('iCloud verification did not complete.', output)
+        self.assertNotIn('fixture@example.invalid', output)
+        self.assertNotIn('123456', output)
         self.assertNotIn('fixture@example.invalid', output)
         self.assertNotIn('123456', output)
 
@@ -249,3 +251,4 @@ class CalendarAvailabilityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

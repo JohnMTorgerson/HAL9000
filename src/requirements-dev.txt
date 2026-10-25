@@ -1,0 +1,5 @@
+# Runtime plus the repository's test dependencies.
+-r requirements.txt
+pytest>=8.3,<10
+playwright>=1.50,<2
+# Browser binaries are separate: python -m playwright install chromium
