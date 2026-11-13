@@ -16,6 +16,8 @@ except Exception:
 
 import requests  # fallback path
 
+_UNMANAGED = object()
+
 class DisplayPushHandler(logging.Handler):
     """
     Logging handler that streams recent log lines to the display server
@@ -54,6 +56,9 @@ class DisplayPushHandler(logging.Handler):
         self._responding = False
         self._expires_at = None
         self._stopped = False
+        self._followup_managed = False
+        self._hidden = False
+        self._pending_clear = False
 
         # client choice
         if DisplayClient is not None:
@@ -65,6 +70,21 @@ class DisplayPushHandler(logging.Handler):
         # default minimalist formatter if caller didn't set one
         if self.formatter is None:
             self.setFormatter(logging.Formatter("%(asctime)s :: %(message)s", datefmt="%H:%M:%S"))
+
+    def follow_conversation(self):
+        """Make the listening state, rather than log traffic, own visibility."""
+        with self.lock:
+            self._followup_managed = True
+            self.hide_conversation()
+
+    def hide_conversation(self):
+        with self.lock:
+            self._hidden = True
+            self._responding = False
+            self._expires_at = None
+            self._lines.clear()
+            self._pending_clear = True
+            self._request_push(force=True)
 
     # Only DISPLAY and above? Set handler level outside or override .filter here if you want.
     # e.g., in hal.py: handler.setLevel(DISPLAY_LEVEL)
@@ -79,20 +99,39 @@ class DisplayPushHandler(logging.Handler):
             return
 
         with self.lock:
+            if self._followup_managed and self._hidden:
+                return  # Background diagnostics must not look like an open listening window.
             level = ('error' if record.levelno >= logging.ERROR else
                      'warning' if record.levelno >= logging.WARNING else 'conversation')
             self._lines.append({'text': line, 'level': level})
-            self._expires_at = time.monotonic() + self.ttl_secs if self.ttl_secs else None
+            if not self._followup_managed:
+                self._expires_at = time.monotonic() + self.ttl_secs if self.ttl_secs else None
             self._request_push()
 
     def begin_response(self):
-        """Called only after speech is accepted, before its first display line."""
+        """Hold existing conversation text while capturing/processing/speaking."""
         with self.lock:
+            self._hidden = False
+            self._pending_clear = False
             self._responding = True
+            if self._followup_managed and self._lines:
+                self._request_push(force=True)
 
-    def end_response(self):
+    def begin_capture(self):
+        self.begin_response()
+
+    def end_response(self, *, followup_remaining=_UNMANAGED):
         """Start the inactivity timer after playback, including failure paths."""
         with self.lock:
+            if followup_remaining is not _UNMANAGED:
+                if followup_remaining is None or followup_remaining <= 0:
+                    self.hide_conversation()
+                    return
+                self._responding = False
+                self._expires_at = time.monotonic() + followup_remaining
+                if self._lines:
+                    self._request_push(force=True)
+                return
             if not self._responding:
                 return
             self._responding = False
@@ -122,6 +161,8 @@ class DisplayPushHandler(logging.Handler):
 
     def _request_push(self, *, force=False):
         if self._stopped:
+            return
+        if self._hidden and not self._pending_clear:
             return
         now = time.monotonic()
         if not self._responding and self._expires_at is not None and now >= self._expires_at:
@@ -166,7 +207,15 @@ class DisplayPushHandler(logging.Handler):
         ttl = (None if self._responding or self._expires_at is None
                else max(1, math.ceil(self._expires_at - now)))
         try:
-            if self._client is not None:
+            if self._pending_clear:
+                if self._client is not None:
+                    self._client.clear(key=self.key)
+                else:
+                    r = self._session.post(f'{self.base_url}/api/clear',
+                                           json={'key': self.key}, timeout=self.timeout)
+                    r.raise_for_status()
+                self._pending_clear = False
+            elif self._client is not None:
                 # Use the nice wrapper
                 self._client.text(
                     payload_text,
@@ -204,6 +253,10 @@ class DisplayPushHandler(logging.Handler):
             self._muted_until = 0.0
             logging.getLogger('HAL').debug('Display transcript sent: chars=%d; ttl=%s.',
                                            len(payload_text), ttl, extra={'skip_display': True})
+            if self._followup_managed and self._responding and not self._hidden:
+                # Keep the server's idle reaper from hiding a long-running turn.
+                # The timer is replaced by a deadline or clear when the turn ends.
+                self._schedule(30.)
 
         except Exception as exc:
             # brief backoff to avoid spamming errors when server is down

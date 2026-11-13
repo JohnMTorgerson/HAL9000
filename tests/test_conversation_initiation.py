@@ -414,5 +414,6 @@ def test_direct_request_in_place_of_consent_can_use_the_existing_action_flow(mem
     with pytest.raises(SystemExit):
         run()
     assert ns['llm'].get_initiation_response.call_args.kwargs['explicitly_addressed'] is True
-    ns['handle_api_call'].assert_called_once_with('weather', ['Minneapolis'], 'Hey HAL, what is the weather?')
+    ns['handle_api_call'].assert_called_once()
+    assert ns['handle_api_call'].call_args.args == ('weather', ['Minneapolis'], 'Hey HAL, what is the weather?')
     ns['llm'].finish_turn.assert_called_once_with('Hey HAL, what is the weather?', 'It is sunny.')

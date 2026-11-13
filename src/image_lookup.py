@@ -146,7 +146,8 @@ class ImageWorkflow:
             'saved_images': self.history.catalogue() if self.history is not None else [],
         })
 
-    def handle_reply(self, reply, *, on_search=None):
+    def handle_reply(self, reply, *, on_search=None, check_cancelled=lambda: None):
+        check_cancelled()
         try:
             command = parse_image_request(reply)
         except ValueError:
@@ -181,7 +182,9 @@ class ImageWorkflow:
                 self.logger.info('Image lookup failed: %s', type(exc).__name__)
                 result = ImageResult('error', IMAGE_FAILURE_REPLY)
             if result.status != 'ok':
+                check_cancelled()
                 return self._finish(result)
+            check_cancelled()
             self.images, self.index, self.query = result.images, -1, query
             self.cached_until = self.clock() + 1200
             target, direction = 0, 1
@@ -214,6 +217,7 @@ class ImageWorkflow:
             if not 0 <= target < len(self.images):
                 return self._finish(ImageResult('no_results', "I don't have another image in that direction."))
         while 0 <= target < len(self.images):
+            check_cancelled()
             candidate = self.images[target]
             self.retry_target = target
             citations = [{'url': candidate.source_url,
@@ -224,6 +228,7 @@ class ImageWorkflow:
             except Exception as exc:
                 self.logger.info('Image display failed: %s', type(exc).__name__)
                 status = 'unavailable'
+            check_cancelled()
             if status == 'loaded':
                 self.index = target
                 self.retry_target = None

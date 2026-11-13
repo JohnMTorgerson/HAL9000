@@ -360,7 +360,8 @@ class MainLoopTests(unittest.TestCase):
         ns['voice_input'].read_command.side_effect = read
         with self.assertRaises(SystemExit):
             run()
-        ns['handle_api_call'].assert_called_once_with('weather', ['tomorrow'], 'What about tomorrow?')
+        ns['handle_api_call'].assert_called_once()
+        self.assertEqual(ns['handle_api_call'].call_args.args, ('weather', ['tomorrow'], 'What about tomorrow?'))
         self.assertEqual(ns['voice'].synthesize_wav.call_count, 2)
         self.assertEqual([call.kwargs['label'] for call in ns['play_audio'].call_args_list],
                          ['debug query', 'reply', 'acknowledgment', 'reply'])

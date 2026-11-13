@@ -4,6 +4,11 @@ import json
 import os
 import re
 import time
+import threading
+
+
+class ConversationCancelled(Exception):
+    """The user ended this interaction with a spacebar tap."""
 
 
 @dataclass(frozen=True)
@@ -28,26 +33,54 @@ class FollowupSession:
     def __init__(self, settings, clock=time.perf_counter):
         self.settings = settings
         self.clock = clock
+        self.cancelled = threading.Event()
+        self.lock = threading.RLock()
+        self.busy = False
         self.close()
 
     def close(self):
-        self.window_end = None
+        with self.lock:
+            self.window_end = None
 
     def deadline(self):
-        if self.window_end is not None and self.clock() >= self.window_end:
+        with self.lock:
+            if self.window_end is not None and self.clock() >= self.window_end:
+                self.close()
+            return self.window_end
+
+    def begin_input(self):
+        with self.lock:
+            self.check_cancelled()
+            self.busy = self.settings.enabled
+
+    def can_cancel(self):
+        with self.lock:
+            return self.settings.enabled and not self.cancelled.is_set() and (
+                self.busy or self.deadline() is not None)
+
+    def cancel(self):
+        with self.lock:
+            self.cancelled.set()
             self.close()
-        return self.window_end
+
+    def check_cancelled(self):
+        if self.cancelled.is_set():
+            raise ConversationCancelled()
+
+    def finish_input(self):
+        with self.lock:
+            self.busy = False
 
     def after_response(self, *, explicit):
         """Call only after final playback. Ignored speech never calls this."""
-        now = self.clock()
-        if not self.settings.enabled:
-            return
-        # A follow-up that began before its deadline may finish after it. Renew
-        # after the complete reply, without a total conversation duration limit.
-        # Once explicitly closed/expired, only a fresh explicit trigger opens it.
-        if explicit or self.window_end is not None:
-            self.window_end = now + self.settings.window
+        with self.lock:
+            self.check_cancelled()
+            now = self.clock()
+            if not self.settings.enabled:
+                return
+            # A follow-up that began before its deadline may finish after it.
+            if explicit or self.window_end is not None:
+                self.window_end = now + self.settings.window
 
 
 def explicitly_addresses_hal(text):

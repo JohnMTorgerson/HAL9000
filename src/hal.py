@@ -20,7 +20,8 @@ from user_identity import get_user_name
 from audio_devices import choose_input_device
 from whisper_stt import WhisperSTT
 from live_transcription import TranscriptionError, NoSpeechError
-from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
+from followup import (FollowupSettings, FollowupSession, ConversationCancelled,
+                      explicitly_addresses_hal)
 from speech_logging import SpeechFormatter
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
                           DAISY_PATH, SONG_PAUSE_SECONDS, SONG_FAILURE_REPLY)
@@ -199,17 +200,21 @@ led = get_led()
 # ------------------------------------------------------------
 # Main Loop
 # ------------------------------------------------------------
-def speak_reply(text, *, label='reply', **timing):
+def speak_reply(text, *, label='reply', conversation=None, **timing):
     """Shared speech path for ordinary replies and the fixed availability check."""
     stage_started = time.perf_counter()
+    if conversation is not None:
+        conversation.check_cancelled()
     with wave.open('hal_output.wav', 'wb') as wav_file:
         voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+    if conversation is not None:
+        conversation.check_cancelled()
     logger.info('Timing: voice synthesis %.3fs.', time.perf_counter() - stage_started)
     stage_started = time.perf_counter()
     audio, fs = sf.read('hal_output.wav', dtype='float32')
     sf.write('hal_output.wav', normalize_audio(audio), fs)
     logger.info('Timing: reply audio normalization %.3fs.', time.perf_counter() - stage_started)
-    play_audio('hal_output.wav', label=label, **timing)
+    play_audio('hal_output.wav', label=label, conversation=conversation, **timing)
 
 
 def run():
@@ -222,10 +227,30 @@ def run():
         logger=logger,
     )
     display_mgr.start()
+    if followup_settings.enabled:
+        display_handler.follow_conversation()
+
+    def cancel_conversation():
+        # Finish the output cleanup before the main loop can begin a new turn.
+        with followups.lock:
+            followups.cancel()
+            led.off()
+            try:
+                sd.stop()
+            except Exception as exc:
+                logger.warning('Unable to stop audio playback: %s', exc, extra={'skip_display': True})
+            finally:
+                display_handler.hide_conversation()
+        logger.info('Spacebar tap: conversation cancelled; pending reply discarded; wake phrase or spacebar required again.')
+
+    voice_input.start_controls(on_tap=cancel_conversation, tap_enabled=followups.can_cancel,
+                               check_cancelled=followups.check_cancelled)
 
     while True:
         live_stream = None
+        turn_begun = False
         try:
+            followups.check_cancelled()
             triggered_at = None
             trigger_kind = None
             verify_wake_transcript = False
@@ -238,6 +263,9 @@ def run():
                 nonlocal triggered_at, trigger_kind
                 triggered_at = time.perf_counter()
                 trigger_kind = kind
+                followups.begin_input()
+                if followup_settings.enabled:
+                    display_handler.begin_capture()
                 logger.info("====================================================================")
                 if kind == 'followup':
                     logger.info('Possible follow-up speech: waiting for nonempty transcription before lighting LED.')
@@ -257,13 +285,16 @@ def run():
                 live_stream = stt.create_live_stream()
                 capture_options['audio_stream'] = live_stream
             captured = voice_input.read_command(**capture_options)
+            followups.check_cancelled()
             if isinstance(captured, InitiationRequest):
                 prompt = f'{USER}, do you have a moment?'
                 if initiator is not None and initiator.begin(captured, prompt):
+                    followups.begin_input()
                     display_handler.begin_response()
                     led.on()
                     logger.display(f'HAL: {prompt}', extra={'speech_role': 'hal'})
-                    speak_reply(prompt, label='availability')
+                    speak_reply(prompt, label='availability', conversation=followups)
+                    followups.check_cancelled()
                     # The same listening window handles both availability and
                     # ordinary answers; it starts only after playback finishes.
                     followups.after_response(explicit=True)
@@ -298,7 +329,7 @@ def run():
             logger.info('Timing: query audio preparation %.3fs.', time.perf_counter() - stage_started)
             if DEBUG_PLAYBACK and trigger_kind != 'followup':
                 logger.debug("DEBUG_PLAYBACK enabled – playing last command...")
-                play_audio("last_command.wav", label='debug query')
+                play_audio("last_command.wav", label='debug query', conversation=followups)
 
             # transcribe audio to text
             stage_started = time.perf_counter()
@@ -309,6 +340,7 @@ def run():
             else:
                 user_input = stt.transcribe(audio, fs)
                 logger.info('Timing: query transcription %.3fs.', time.perf_counter() - stage_started)
+            followups.check_cancelled()
             if verify_wake_transcript:
                 # Use the unchanged lax matcher, including leading buffered
                 # speech. Run before memory recall, display, or any response LLM.
@@ -333,6 +365,8 @@ def run():
             news.begin_turn()
             llm.news_context = news.context()
             llm.begin_turn(user_input)
+            turn_begun = True
+            followups.check_cancelled()
             stage_started = time.perf_counter()
             explicit = trigger_kind in ('wakeword', 'spacebar')
             if initiator is not None and initiator.pending is not None:
@@ -342,6 +376,7 @@ def run():
                     lead_in={'at': pending['at'], 'text': pending['availability_prompt']},
                     recent_attempts=initiator.recent_attempts(),
                     explicitly_addressed=explicit or explicitly_addresses_hal(user_input))
+                followups.check_cancelled()
                 if initiation_result.decision == 'ignore':
                     led.off()
                     continue
@@ -357,6 +392,7 @@ def run():
                 logger.info('FOLLOWUP heard: %s', user_input, extra={'speech_role': 'user'})
                 explicit = explicitly_addresses_hal(user_input)
                 decision = llm.get_followup_response(user_input, explicitly_addressed=explicit)
+                followups.check_cancelled()
                 logger.info('Timing: follow-up decision and response %.3fs; decision=%s.',
                             time.perf_counter() - stage_started, decision.decision)
                 if decision.decision != 'respond':
@@ -375,6 +411,7 @@ def run():
                 logger.display(f"USER: {user_input}", extra={'speech_role': 'user'})
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(user_input)
+            followups.check_cancelled()
             logger.info('Timing: initial LLM response %.3fs.', time.perf_counter() - stage_started)
             allow_actions = initiation_result is None or initiation_result.decision == 'respond'
 
@@ -406,6 +443,7 @@ def run():
             # Bound tool chains even if the model ignores a tool's attempt limit.
             external_calls = 0
             while allow_actions and not llm.last_refusal and hal_reply.startswith("[EXTERNAL_API_CALL]"):
+                followups.check_cancelled()
                 if external_calls >= 8:
                     logger.info('External lookup limit reached: %s calls; requesting a final answer.', external_calls)
                     hal_reply = llm.get_response(
@@ -413,6 +451,7 @@ def run():
                         'this turn. Answer the original request from the evidence already retrieved, '
                         'attribute sources, and explain any missing information. Respond only with speech. '
                         f'Original request: {user_input}')
+                    followups.check_cancelled()
                     allow_actions = False
                     if hal_reply.lstrip().startswith(('[EXTERNAL_API_CALL]', IMAGE_MARKER, PLAY_SONG_MARKER)):
                         hal_reply = 'I could not complete that lookup within the available attempts.'
@@ -420,9 +459,11 @@ def run():
                 external_calls += 1
                 logger.display("HAL: Just a moment...", extra={'speech_role': 'hal'})
                 play_audio("HAL-clips/just_a_moment_normalized.aiff", label='acknowledgment',
+                           conversation=followups,
                            triggered_at=triggered_at, capture_ready_at=capture_ready_at,
                            speech_ended_at=speech_ended_at, first_response=first_response)
                 first_response = False
+                followups.check_cancelled()
 
                 logger.display(f"HAL (external request): {hal_reply}")
                 stage_started = time.perf_counter()
@@ -431,8 +472,10 @@ def run():
                 except ValueError:
                     command = []
                 api_type = command[0].lower() if command else 'invalid'
-                api_response = (handle_api_call(api_type, command[1:], user_input) if command else
+                api_response = (handle_api_call(api_type, command[1:], user_input,
+                                               check_cancelled=followups.check_cancelled) if command else
                                 'Invalid command syntax. Use a documented command with balanced quotes.')
+                followups.check_cancelled()
                 logger.info('Timing: external request %s %.3fs.', api_type, time.perf_counter() - stage_started)
                 llm.news_context = news.context()
                 enriched_prompt = (f'[EXTERNAL_API_RESPONSE] Original request: {json.dumps(user_input)}\n'
@@ -446,6 +489,7 @@ def run():
 
                 stage_started = time.perf_counter()
                 hal_reply = llm.get_response(enriched_prompt)
+                followups.check_cancelled()
                 logger.info('Timing: follow-up LLM response %.3fs.', time.perf_counter() - stage_started)
 
             action_result = None
@@ -455,10 +499,13 @@ def run():
                     nonlocal first_response
                     logger.display('HAL: Just a moment.', extra={'speech_role': 'hal'})
                     play_audio('HAL-clips/just_a_moment_normalized.aiff', label='acknowledgment',
+                               conversation=followups,
                                triggered_at=triggered_at, capture_ready_at=capture_ready_at,
                                speech_ended_at=speech_ended_at, first_response=first_response)
                     first_response = False
-                image_result = images.handle_reply(hal_reply, on_search=image_wait)
+                image_result = images.handle_reply(hal_reply, on_search=image_wait,
+                                                   check_cancelled=followups.check_cancelled)
+                followups.check_cancelled()
                 hal_reply = image_result.reply
                 action_result = image_result.action_result
 
@@ -483,24 +530,32 @@ def run():
                 logger.debug(f"Post-processed HAL reply:\nBEFORE: {hal_reply}\nAFTER : {filtered_reply}")
             hal_reply = filtered_reply
 
+            followups.check_cancelled()
             logger.display(f"HAL: {hal_reply}", extra={'speech_role': 'hal'})
 
             speak_reply(hal_reply, triggered_at=triggered_at,
+                       conversation=followups,
                        capture_ready_at=capture_ready_at, speech_ended_at=speech_ended_at,
                        first_response=first_response)
+            followups.check_cancelled()
             if song is not None:
                 time.sleep(SONG_PAUSE_SECONDS)
+                followups.check_cancelled()
                 logger.display('HAL: Singing Daisy Bell.')
                 try:
                     # This clip is already mastered to match "Just a moment".
                     # Keep its level and EQ, while using the normal output device.
-                    play_audio(str(DAISY_PATH), label='song: Daisy Bell', preserve_mastering=True)
+                    play_audio(str(DAISY_PATH), label='song: Daisy Bell', preserve_mastering=True,
+                               conversation=followups)
+                except ConversationCancelled:
+                    raise
                 except Exception:
                     logger.exception('Daisy Bell playback failed.')
                     logger.display(f'HAL: {SONG_FAILURE_REPLY}')
                     action_result = 'Daisy Bell playback failed; completion was not confirmed.'
                 else:
                     action_result = 'Played the Daisy Bell recording to completion.'
+            followups.check_cancelled()
             # Persist the actual user/final spoken reply, never intermediate
             # API payloads or rejected follow-ups. Background API work starts
             # only after all playback, including a song. Label action outcomes
@@ -509,6 +564,7 @@ def run():
                 llm.finish_turn(user_input, hal_reply, action_result=action_result)
             else:
                 llm.finish_turn(user_input, hal_reply)
+            turn_begun = False  # A completed, spoken exchange survives a later tap.
             # Never open a window after "Just a moment", an intro, or during a song.
             if initiator is not None:
                 if initiation_result is not None:
@@ -525,6 +581,14 @@ def run():
             #turn LED off
             logger.info("Turning LED off")
             led.off()
+
+        except ConversationCancelled:
+            followups.close()
+            if initiator is not None:
+                initiator.end_window('interrupted')
+            led.off()
+            logger.info('Cancelled interaction finished unwinding; returning to wake listening.')
+            continue
 
         except AudioOverflowError as exc:
             followups.close()
@@ -576,6 +640,7 @@ def run():
             if initiator is not None:
                 initiator.end_window('interrupted')
             logger.info("Keyboard interrupt received. Shutting down gracefully.")
+            voice_input.close_controls()
             display_handler.close()
             display_mgr.stop()
             led.off()
@@ -586,30 +651,41 @@ def run():
             followups.close()
             if initiator is not None:
                 initiator.end_window('failed')
+            voice_input.close_controls()
             display_handler.close()
             display_mgr.stop()
             led.off()
             llm.close_memory()
             raise
         finally:
+            if followups.cancelled.is_set() and turn_begun:
+                llm.cancel_turn()
             if initiator is not None:
                 initiator.interacted()
                 if followups.window_end is None:
                     initiator.end_window()
                     llm.end_initiation()
-            display_handler.end_response()
+            followups.finish_input()
+            if followup_settings.enabled:
+                deadline = followups.deadline()
+                display_handler.end_response(followup_remaining=(
+                    max(0., deadline - time.perf_counter()) if deadline is not None else None))
+            else:
+                display_handler.end_response()
             if live_stream is not None:
                 live_stream.close()
+            followups.cancelled.clear()
 
 # ------------------------------------------------------------
 # API CALL
 # ------------------------------------------------------------
-def handle_api_call(api_type, params, user_input):
+def handle_api_call(api_type, params, user_input, *, check_cancelled=lambda: None):
     """
     Executes an external API call based on type and params.
     Returns a string `api_response` that will be fed back to HAL.
     """
     try:
+        check_cancelled()
         if api_type == "weather":
             city = " ".join(params)
             return fetch_current_weather(city)
@@ -676,6 +752,7 @@ def handle_api_call(api_type, params, user_input):
             # push a calendar overlay to the display
             # suppose `response` is a list of event dicts from your calendar backend
             # each item can have: title, start, end, location (strings), open_now (bool)
+            check_cancelled()
             display.calendar(
                 response,
                 tz=os.getenv("TIMEZONE", "America/Chicago"),
@@ -736,6 +813,7 @@ def handle_api_call(api_type, params, user_input):
                 for p in places
             )
             if has_coords:
+                check_cancelled()
                 try:
                     display.map(places, on=("top",), priority=80, ttl=120, key="map", fullscreen=False, scale=4, zoom=14)
                 except Exception as e:
@@ -749,6 +827,8 @@ def handle_api_call(api_type, params, user_input):
         else:
             return f"Unknown API request type: {api_type}"
 
+    except ConversationCancelled:
+        raise
     except Exception as e:
         logger.error(f"{api_type} API call failed: {e}")
         return f"{api_type} API error: {e}"
@@ -835,7 +915,10 @@ def handle_api_call(api_type, params, user_input):
 #         logger.error(f"Audio playback failed: {e}")
 
 def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=None,
-               speech_ended_at=None, first_response=False, preserve_mastering=False):
+               speech_ended_at=None, first_response=False, preserve_mastering=False,
+               conversation=None):
+    if conversation is not None:
+        conversation.check_cancelled()
     preparation_started = time.perf_counter()
     if preserve_mastering:
         data, sr = sf.read(filename, dtype="float32", always_2d=True)
@@ -879,7 +962,14 @@ def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=N
 
     # Play and wait
     stream_started = time.perf_counter()
-    sd.play(data, samplerate=sr, device=output_device)
+    if conversation is not None:
+        # Serialize the start with cancellation so a late sd.play cannot undo
+        # the keyboard callback's sd.stop.
+        with conversation.lock:
+            conversation.check_cancelled()
+            sd.play(data, samplerate=sr, device=output_device)
+    else:
+        sd.play(data, samplerate=sr, device=output_device)
     playback_started = time.perf_counter()
     # This is the software stream start, not a measurement at the loudspeaker.
     logger.info('Timing: %s playback started; preparation %.3fs, stream startup %.3fs, audio duration %.3fs.',
@@ -902,6 +992,8 @@ def play_audio(filename, *, label='audio', triggered_at=None, capture_ready_at=N
                         'speech end unavailable, excludes endpoint wait).',
                         playback_started - capture_ready_at, label)
     sd.wait()
+    if conversation is not None:
+        conversation.check_cancelled()
     logger.info('Timing: %s playback finished; stream wait %.3fs.', label, time.perf_counter() - playback_started)
 
 def normalize_audio(audio, peak=0.95):

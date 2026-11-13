@@ -20,7 +20,7 @@ from audio_devices import choose_input_device
 from audio_capture import AudioOverflowError
 from llm_client import LLMClient, LLMServiceError
 from live_transcription import TranscriptionError, NoSpeechError
-from followup import FollowupSettings, FollowupSession, explicitly_addresses_hal
+from followup import FollowupSettings, FollowupSession, ConversationCancelled, explicitly_addresses_hal
 from conversation_initiation import InitiationRequest
 from wake_detector import matches_wake
 from song_request import (parse_song_request, SongRequestError, PLAY_SONG_MARKER,
@@ -253,7 +253,7 @@ class MainLoopTests(unittest.TestCase):
     def fixture(self):
         namespace = {name: Mock() for name in (
             'logger', 'led', 'voice_input', 'stt', 'llm', 'DisplayServerManager', 'display_handler',
-            'play_audio', 'handle_api_call', 'time', 'images', 'news')}
+            'play_audio', 'handle_api_call', 'time', 'images', 'news', 'sd')}
         namespace.update({
             'os': types.SimpleNamespace(getenv=lambda name, default=None: default),
             'sys': sys, 're': re, 'shlex': shlex, 'json': json, 'DEBUG_ON': False, 'DEBUG_PLAYBACK': False,
@@ -269,6 +269,7 @@ class MainLoopTests(unittest.TestCase):
             'repair_image_reply': repair_image_reply,
             'SONG_PAUSE_SECONDS': SONG_PAUSE_SECONDS, 'SONG_FAILURE_REPLY': SONG_FAILURE_REPLY,
             'FollowupSession': FollowupSession, 'followup_settings': FollowupSettings(),
+            'ConversationCancelled': ConversationCancelled,
             'initiator': None, 'InitiationRequest': InitiationRequest,
             'explicitly_addresses_hal': explicitly_addresses_hal,
             'time': types.SimpleNamespace(perf_counter=lambda: 0., sleep=Mock()),
@@ -393,7 +394,7 @@ class MainLoopTests(unittest.TestCase):
         ns['stt'].transcribe.side_effect = lambda *args: clock.advance(1., 'Hey Hal, are you there?')
         replies = iter(['[EXTERNAL_API_CALL] calendar_next_event', 'I am ready.', 'I am ready.'])
         ns['llm'].get_response.side_effect = lambda text: clock.advance(2., next(replies))
-        ns['handle_api_call'].side_effect = lambda *args: clock.advance(.25, 'calendar result')
+        ns['handle_api_call'].side_effect = lambda *args, **kw: clock.advance(.25, 'calendar result')
         ns['voice'].synthesize_wav.side_effect = lambda *a, **kw: clock.advance(.3)
         captures = []
         def read_command(on_trigger):
@@ -407,7 +408,7 @@ class MainLoopTests(unittest.TestCase):
             return [.1], 16000
         ns['voice_input'].read_command.side_effect = read_command
         playback_elapsed = []
-        def play(filename, *, label, triggered_at, capture_ready_at, speech_ended_at, first_response):
+        def play(filename, *, label, triggered_at, capture_ready_at, speech_ended_at, first_response, conversation):
             self.assertIsNone(speech_ended_at)
             self.assertEqual((triggered_at, capture_ready_at), captures[-1])
             self.assertEqual(first_response, label == 'acknowledgment' or len(captures) == 2)

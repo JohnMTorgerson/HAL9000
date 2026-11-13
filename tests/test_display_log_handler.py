@@ -134,3 +134,79 @@ def test_raw_http_fallback_carries_the_same_level_metadata(delivery):
     payload = d.handler._session.post.call_args.kwargs['json']
     assert payload['text'] == 'Error message.'
     assert payload['text_lines'] == [{'text': 'Error message.', 'level': 'error'}]
+
+
+@pytest.mark.parametrize('window', [8, 30, 60, 180])
+def test_followup_owns_transcript_deadline_and_diagnostics_cannot_renew_it(delivery, window):
+    d = delivery
+    d.handler.follow_conversation()
+    d.handler.begin_capture()
+    d.say('USER: Hello.')
+    d.handler.begin_response()
+    d.say('HAL: Hello.')
+    d.handler.end_response(followup_remaining=window)
+    assert d.client.text.call_args.kwargs['ttl'] == window
+    d.clock.now += 3
+    d.handler.handle(logging.LogRecord('HAL', 30, '', 0, 'Background warning.', (), None))
+    assert d.client.text.call_args.kwargs['ttl'] == window - 3
+    assert d.client.text.call_args.kwargs['text_lines'][-1]['level'] == 'warning'
+    d.handler.begin_capture()  # Candidate speech holds the pane through processing.
+    assert d.client.text.call_args.kwargs['ttl'] is None
+    d.clock.now += 2
+    d.handler.end_response(followup_remaining=window - 5)  # Ignored: same deadline.
+    assert d.client.text.call_args.kwargs['ttl'] == window - 5
+    d.handler.end_response(followup_remaining=None)  # Timeout or explicit end.
+    d.client.clear.assert_called_with(key='logs')
+    pushes = d.client.text.call_count
+    d.handler.handle(logging.LogRecord('HAL', 40, '', 0, 'Idle error.', (), None))
+    d.say('A stale reply must not reopen the pane.')
+    assert d.client.text.call_count == pushes
+
+
+def test_cancel_replaces_pending_text_retry_with_clear_and_fresh_conversation(delivery):
+    d = delivery
+    d.handler.follow_conversation()
+    d.clock.now += 1
+    d.client.text.side_effect = OSError('offline')
+    d.handler.begin_response()
+    d.say('HAL: Old reply.')
+    stale_timer = d.timers[-1]
+    d.handler.hide_conversation()
+    stale_timer.fire()
+    d.timers[-1].fire()
+    assert d.client.text.call_count == 1
+    assert d.client.clear.call_count == 2  # Startup and cancellation.
+    d.client.text.side_effect = None
+    d.handler.begin_capture()
+    d.say('USER: A new conversation.')
+    if d.timers[-1] is not stale_timer:
+        d.timers[-1].fire()
+    assert 'Old reply' not in d.client.text.call_args.args[0]
+    assert d.client.text.call_args.kwargs['ttl'] is None
+
+
+def test_raw_http_clear_only_removes_the_transcript_overlay(delivery):
+    d = delivery
+    d.handler._client = None
+    d.handler._session = Mock()
+    d.handler.follow_conversation()
+    assert d.handler._session.post.call_args.args[0].endswith('/api/clear')
+    assert d.handler._session.post.call_args.kwargs['json'] == {'key': 'logs'}
+
+
+def test_long_processing_keeps_pane_alive_until_its_actual_window_starts(delivery):
+    d = delivery
+    d.handler.follow_conversation()
+    d.clock.now += 1
+    d.handler.begin_response()
+    d.say('HAL: Just a moment.')
+    for _ in range(7):
+        d.timers[-1].fire()
+        assert d.client.text.call_args.kwargs['ttl'] is None
+    assert d.clock.now > 300  # Beyond the display server's 180-second idle reset.
+    heartbeat = d.timers[-1]
+    d.handler.end_response(followup_remaining=60)
+    sent = d.client.text.call_count
+    heartbeat.fire()  # A stale heartbeat cannot undo the deadline.
+    assert d.client.text.call_count == sent
+    assert d.client.text.call_args.kwargs['ttl'] == 60

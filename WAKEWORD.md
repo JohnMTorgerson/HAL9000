@@ -328,10 +328,16 @@ the conversation, and candidates whose classification fails. These lines appear
 in the terminal and `log.log` even with `DEBUG_ON=False`; they do not appear on
 HAL's display unless accepted as a normal user request.
 
-The transcript pane stays visible while an accepted response is being prepared
-and spoken, including image searches and songs. Its 30-second inactivity timer
-starts when HAL finishes. Empty, ignored, and end-of-conversation follow-ups do
-not refresh it. Closely spaced display lines get a deferred push, normally
+With follow-ups enabled, the transcript pane follows the actual conversation
+state. It stays visible during capture, processing, and playback (including image
+searches and songs). After HAL finishes, it uses the remaining follow-up window
+from `FOLLOWUP_WINDOW_SECONDS`, including custom durations up to 180 seconds.
+Accepted replies renew both together. Empty or ignored speech uses the original
+deadline; log messages cannot extend it. Timeout, an `end` decision, or a spacebar
+tap clears the transcript overlay immediately and returns the bottom pane to its
+slideshow. Other content, such as an image in the top pane, keeps its own lifetime.
+With follow-ups disabled, the existing 30-second transcript timeout remains.
+Closely spaced display lines get a deferred push, normally
 within 250 ms, including the last line of a burst; they never depend on a later
 log message.
 Failed display pushes retry after five seconds while the text is still current.
@@ -342,7 +348,32 @@ The pane includes explicitly designated conversation/display messages plus
 warnings and errors. Conversation stays cyan, warnings are yellow, and errors
 (including critical errors) are red. Severity travels with each message, so a
 warning does not recolor earlier conversation. INFO and DEBUG records stay off
-the display; file logs remain plain text.
+the display; file logs remain plain text. With follow-ups enabled, background
+warnings/errors outside an active conversation stay in the logs and do not reopen
+the transcript pane. This keeps the pane a reliable indication of conversation
+activity. Warnings/errors during a conversation retain their yellow/red colors.
+
+### Spacebar tap to end a conversation
+
+During an open follow-up window, press and release spacebar in less than 0.3 seconds
+to end the conversation. This also works while a request from that conversation is
+being captured, transcribed, processed, synthesized, or spoken. HAL turns off the
+LED, stops current playback, clears the transcript, and requires a fresh wake phrase
+or spacebar recording before resuming. A cancelled reply cannot renew the window
+or be saved as a completed conversation. No LLM request is needed to interpret a tap.
+
+Hold spacebar for at least 0.3 seconds to keep its push-to-talk behavior: capture
+continues through pauses until release, and the result bypasses relevance filtering.
+The press time is preserved, including audio buffered while the press becomes a
+hold. Key repeat does not restart the timer. When idle, a short press keeps its
+existing recording behavior; only a press begun during a conversation can cancel it.
+There is still no overall conversation duration cap.
+
+The keyboard listener stays active while the microphone is closed for processing
+or playback. An already-sent network request cannot be unsent: the LED and pane
+clear immediately, but the main loop resumes wake listening after that call returns
+(or fails), discarding its result. A synthesis already underway likewise finishes
+without playing its output. The main log records the tap and the return to listening.
 
 The embedded display server keeps Uvicorn's startup/shutdown, HTTP request,
 warning and error messages in the terminal. Its terminal handlers are installed

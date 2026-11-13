@@ -66,6 +66,19 @@ class VoiceInput:
         self.capture_factory = capture_factory
         self.keyboard_factory = keyboard_factory
         self.last_speech_end_at = None
+        self.keys = None
+        self.check_cancelled = lambda: None
+
+    def start_controls(self, *, on_tap, tap_enabled, check_cancelled):
+        """Keep one listener alive while the microphone is closed for a reply."""
+        self.keys = self.keyboard_factory(self.logger, on_tap=on_tap, tap_enabled=tap_enabled)
+        self.check_cancelled = check_cancelled
+        self.keys.start()
+
+    def close_controls(self):
+        if self.keys is not None:
+            self.keys.close()
+            self.keys = None
 
     @classmethod
     def from_env(cls, logger, device_selector=lambda: None, followup_enabled=False):
@@ -111,13 +124,17 @@ class VoiceInput:
             device = self.device_selector()
         capture = self.capture_factory(device=device, channel=settings.channel,
                                        latency=settings.input_latency)
-        keys = self.keyboard_factory(self.logger)
+        keys = self.keys if self.keys is not None else self.keyboard_factory(self.logger)
         stream_cursor = None
         completed = False
         speech_sample = None
         try:
             capture.start()
-            keys.start()
+            self.check_cancelled()
+            if self.keys is None:
+                keys.start()
+            else:
+                keys.prepare_capture()
             if self.detector is None and not keys.available and followup_deadline is None:
                 raise RuntimeError('Neither wake detection nor a spacebar listener is available. Check startup errors.')
             history = capture.history
@@ -162,6 +179,7 @@ class VoiceInput:
                 self.logger.info('Follow-up listening: %.2fs remaining; no wake phrase required.',
                                  max(0., followup_deadline - time.perf_counter()))
             while True:
+                self.check_cancelled()
                 capture.check()
                 total, _ = history.position()
                 pressed, released = keys.snapshot()
@@ -234,6 +252,7 @@ class VoiceInput:
                                 audio_stream.append(history.read(stream_cursor, end))
                                 stream_cursor = end
                     if reason:
+                        self.check_cancelled()
                         capture.check()
                         audio = to_audio(history.read(active['start'], end), rate)
                         if not len(audio):
@@ -293,6 +312,7 @@ class VoiceInput:
                 if audio_stream is not None:
                     audio_stream.cancel('The microphone command was discarded.')
             try:
-                keys.close()
+                if self.keys is None:
+                    keys.close()
             finally:
                 capture.close()

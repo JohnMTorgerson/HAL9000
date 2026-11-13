@@ -105,6 +105,13 @@ class LLMClient:
             snapshot = self.memory.read_context(query=user_input, **options)
             if snapshot is not None:
                 self.chat_history, self.memory_context = snapshot
+        self._turn_history = list(self.chat_history)
+
+    def cancel_turn(self):
+        """Discard unspoken replies and tool chatter from the interrupted turn."""
+        self.chat_history = list(self._turn_history)
+        self.assistant_lead_in = None
+        self.last_refusal = False
 
     def finish_turn(self, user_speech, spoken_reply, *, action_result=None):
         """Record completed speech and any explicitly labeled local action result."""

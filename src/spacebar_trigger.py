@@ -1,11 +1,13 @@
-"""Watch one spacebar press/release pair while HAL listens for a command."""
+"""Watch spacebar presses during capture, processing, and playback."""
 import platform
 import select
 import threading
 import time
 
 class SpacebarTrigger:
-    def __init__(self, logger):
+    TAP_SECONDS = .3
+
+    def __init__(self, logger, *, on_tap=None, tap_enabled=lambda: False):
         self.logger = logger
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
@@ -15,16 +17,41 @@ class SpacebarTrigger:
         self.thread = None
         self.devices = []
         self.available = False
+        self.on_tap = on_tap
+        self.tap_enabled = tap_enabled
+        self._tap_armed = False
+        self._down = False
 
     def press(self):
         with self.lock:
-            if self.pressed_at is None:
+            if self._down:
+                return  # OS key repeat must not reset the duration.
+            self._down = True
+            if self.pressed_at is None or self.on_tap is not None:
                 self.pressed_at = time.perf_counter()
+                self.released_at = None
+                self._tap_armed = self.tap_enabled()
 
     def release(self):
+        tapped = False
         with self.lock:
+            if not self._down:
+                return
+            self._down = False
             if self.pressed_at is not None and self.released_at is None:
                 self.released_at = time.perf_counter()
+                tapped = (self.on_tap is not None and self._tap_armed and
+                          self.released_at - self.pressed_at < self.TAP_SECONDS)
+                if tapped:
+                    self.pressed_at = self.released_at = None
+        if tapped:
+            self.on_tap()  # Never run application/display callbacks under the key lock.
+
+    def prepare_capture(self):
+        """Discard a consumed key pair, preserving a key still held at capture start."""
+        with self.lock:
+            if not self._down:
+                self.pressed_at = self.released_at = None
 
     def snapshot(self):
         with self.lock:
